@@ -182,6 +182,7 @@ fn account_header(
         name,
         FontId::new(font.size, font.family.clone()),
         visuals.strong_text_color(),
+        true,
     );
 
     response.on_hover_text(state_label(view.state)).clicked()
@@ -260,6 +261,7 @@ fn mailbox_row(
         mailbox.leaf(),
         FontId::new(font.size, font.family.clone()),
         color,
+        false,
     );
 
     // Only offer the full path when the name is actually cut off, or when the

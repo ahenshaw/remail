@@ -120,6 +120,30 @@ mod tests {
     }
 
     #[test]
+    fn mixes_towards_the_second_colour() {
+        let black = Color32::from_rgb(0, 0, 0);
+        let white = Color32::from_rgb(255, 255, 255);
+        assert_eq!(mix(black, white, 0.0), black);
+        assert_eq!(mix(black, white, 1.0), white);
+        assert_eq!(mix(black, white, 0.5), Color32::from_rgb(128, 128, 128));
+    }
+
+    #[test]
+    fn mixing_clamps_out_of_range_factors() {
+        let a = Color32::from_rgb(10, 20, 30);
+        let b = Color32::from_rgb(200, 210, 220);
+        assert_eq!(mix(a, b, -1.0), a);
+        assert_eq!(mix(a, b, 5.0), b);
+    }
+
+    #[test]
+    fn mixes_each_channel_independently() {
+        let a = Color32::from_rgb(0, 100, 200);
+        let b = Color32::from_rgb(100, 200, 0);
+        assert_eq!(mix(a, b, 0.5), Color32::from_rgb(50, 150, 100));
+    }
+
+    #[test]
     fn renders_no_date_for_missing_timestamps() {
         assert_eq!(format_date_short(0), "");
         assert_eq!(format_date_long(0), "unknown date");
@@ -148,6 +172,7 @@ pub fn paint_truncated(
     text: &str,
     font: FontId,
     color: Color32,
+    bold: bool,
 ) -> bool {
     if text.is_empty() || max_width <= 8.0 {
         return false;
@@ -173,8 +198,30 @@ pub fn paint_truncated(
             }
         }
         let shortened: String = chars[..low].iter().collect::<String>() + "\u{2026}";
-        galley = painter.layout_no_wrap(shortened, font, color);
+        galley = painter.layout_no_wrap(shortened, font.clone(), color);
     }
-    painter.galley(position, galley, color);
+    // egui ships one weight per family, so `strong` is only a colour change.
+    // Drawing the glyphs twice a fraction of a pixel apart thickens the
+    // strokes, which is what "bold" has to mean without a second font file.
+    if bold {
+        let offset = (font.size * 0.05).max(0.4);
+        painter.galley(position, galley.clone(), color);
+        painter.galley(position + egui::vec2(offset, 0.0), galley, color);
+    } else {
+        painter.galley(position, galley, color);
+    }
     truncated
+}
+
+/// Blends two colours in linear space. Used to recede an accent colour
+/// towards the body text colour without depending on the theme's polarity,
+/// which `gamma_multiply` alone cannot do.
+pub fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
+    let t = t.clamp(0.0, 1.0);
+    let blend = |x: u8, y: u8| (x as f32 * (1.0 - t) + y as f32 * t).round() as u8;
+    Color32::from_rgb(
+        blend(a.r(), b.r()),
+        blend(a.g(), b.g()),
+        blend(a.b(), b.b()),
+    )
 }

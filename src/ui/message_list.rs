@@ -20,6 +20,7 @@ pub struct ListInput<'a> {
     /// Show each row's folder. Set when the view spans mailboxes, where the
     /// subject alone does not say where a message lives.
     pub show_folder: bool,
+    pub theme: &'a elegance::Theme,
     pub compact: bool,
     pub base_size: f32,
     /// Font family this pane draws in.
@@ -76,7 +77,9 @@ pub fn show(ui: &mut Ui, input: ListInput<'_>) -> ListOutput {
                 ui.allocate_exact_size(Vec2::new(ui.available_width(), row_height), Sense::click());
 
             if ui.is_rect_visible(rect) {
-                draw_row(ui, rect, envelope, is_cursor, is_selected, &response, &input);
+                draw_row(
+                    ui, rect, envelope, index, is_cursor, is_selected, &response, &input,
+                );
             }
 
             // The star sits in its own hit area at the right edge.
@@ -115,6 +118,7 @@ fn draw_row(
     ui: &Ui,
     rect: Rect,
     envelope: &Envelope,
+    index: usize,
     is_cursor: bool,
     is_selected: bool,
     response: &egui::Response,
@@ -124,6 +128,17 @@ fn draw_row(
     let painter = ui.painter();
     let family = input.family.clone();
     let font = |size: f32| FontId::new(size, family.clone());
+
+    // Stripes go down first so selection and hover read as states layered on
+    // top of them rather than as another stripe colour. The index is the
+    // absolute row, so the pattern does not shift while scrolling.
+    //
+    // Derived from this pane's own fill rather than `faint_bg_color`, which
+    // is not guaranteed to differ from the panel colour the app sets.
+    if index % 2 == 1 {
+        let palette = &input.theme.palette;
+        painter.rect_filled(rect, 0.0, palette.depth_tint(palette.bg, 0.04));
+    }
 
     let background = if is_cursor {
         visuals.selection.bg_fill.gamma_multiply(0.55)
@@ -148,6 +163,15 @@ fn draw_row(
     let strong = visuals.strong_text_color();
     let normal = visuals.text_color();
     let weak = visuals.weak_text_color();
+
+    // Subjects carry the accent. A read one recedes towards body text so the
+    // colour still marks the column without shouting on every row.
+    let palette = &input.theme.palette;
+    let subject_color = if unread {
+        palette.blue
+    } else {
+        super::mix(palette.blue, palette.text_muted, 0.4)
+    };
 
     let size = input.base_size;
     let left = rect.left() + 10.0;
@@ -191,6 +215,7 @@ fn draw_row(
         &sender,
         font(size * 0.95),
         if unread { strong } else { normal },
+        true,
     );
 
     if input.compact {
@@ -202,7 +227,8 @@ fn draw_row(
             (right - date_width - subject_left).max(40.0),
             display_subject(envelope),
             font(size * 0.95),
-            if unread { strong } else { normal },
+            subject_color,
+            false,
         );
     } else {
         let _ = paint_truncated(
@@ -211,7 +237,8 @@ fn draw_row(
             right - text_left,
             display_subject(envelope),
             font(size * 0.95),
-            if unread { strong } else { normal },
+            subject_color,
+            false,
         );
 
         let mut preview_left = text_left;
@@ -239,6 +266,7 @@ fn draw_row(
                 &envelope.preview,
                 font(size * 0.82),
                 weak,
+                false,
             );
         }
     }

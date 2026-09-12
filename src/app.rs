@@ -1363,6 +1363,7 @@ impl RemailApp {
                 selection: &self.selection,
                 compact,
                 show_folder: self.search_results.is_some(),
+                theme: &self.theme,
                 base_size: font.size,
                 family: font.family.clone(),
                 scroll_to_cursor,
