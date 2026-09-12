@@ -66,8 +66,9 @@ fn transport(
 /// Assembles the MIME message. Plain text alone when there are no
 /// attachments, `multipart/mixed` otherwise.
 pub fn build(account: &AccountConfig, draft: &Draft) -> Result<Message> {
-    let from = mailbox(&account.display_name, &account.email)
-        .with_context(|| format!("invalid sender address {}", account.email))?;
+    let identity = account.identity_for(&draft.from);
+    let from = mailbox(&identity.display_name, &identity.email)
+        .with_context(|| format!("invalid sender address {}", identity.email))?;
 
     let mut builder = Message::builder().from(from);
 
@@ -160,11 +161,10 @@ fn guess_mime(filename: &str) -> &'static str {
 
 /// Builds the quoted body and subject for a reply.
 pub fn reply_draft(
-    account: crate::config::AccountId,
+    account: &AccountConfig,
     envelope: &super::model::Envelope,
     body: &super::model::MessageBody,
     reply_all: bool,
-    self_address: &str,
 ) -> Draft {
     let quoted_source = match (&body.text, &body.html) {
         (Some(t), _) if !t.trim().is_empty() => t.clone(),
@@ -181,13 +181,37 @@ pub fn reply_draft(
         .map(|line| format!("> {line}\n"))
         .collect();
 
+    // Reply from whichever of the account's addresses this was sent to, so a
+    // message to an alias is answered by that alias rather than silently
+    // switching identity.
+    let identities = account.identities();
+    let addressed = envelope
+        .to
+        .iter()
+        .chain(envelope.cc.iter())
+        .find_map(|address| {
+            identities
+                .iter()
+                .find(|identity| identity.email.eq_ignore_ascii_case(&address.email))
+        })
+        .cloned()
+        .unwrap_or_default();
+
+    // Every address of ours is dropped from Cc, not just the one replying,
+    // or replying to all would copy the account back to itself.
+    let is_self = |address: &&crate::mail::Addr| {
+        identities
+            .iter()
+            .any(|identity| identity.email.eq_ignore_ascii_case(&address.email))
+    };
+
     let to = envelope.from.iter().map(|a| a.full()).collect::<Vec<_>>().join(", ");
     let cc = if reply_all {
         envelope
             .to
             .iter()
             .chain(envelope.cc.iter())
-            .filter(|a| !a.email.eq_ignore_ascii_case(self_address))
+            .filter(|address| !is_self(address))
             .map(|a| a.full())
             .collect::<Vec<_>>()
             .join(", ")
@@ -196,7 +220,8 @@ pub fn reply_draft(
     };
 
     Draft {
-        account,
+        account: account.id,
+        from: addressed.email,
         to,
         cc,
         bcc: String::new(),
@@ -211,6 +236,7 @@ pub fn reply_draft(
 /// Builds a forward draft with the original body inlined.
 pub fn forward_draft(
     account: crate::config::AccountId,
+    from: String,
     envelope: &super::model::Envelope,
     body: &super::model::MessageBody,
 ) -> Draft {
@@ -229,6 +255,7 @@ pub fn forward_draft(
 
     Draft {
         account,
+        from,
         subject: prefixed_subject("Fwd: ", &envelope.subject),
         body: format!("\n\n{header}{original}"),
         ..Default::default()
@@ -276,6 +303,84 @@ mod tests {
     fn rejects_a_message_with_no_recipients() {
         let draft = Draft { subject: "Hi".into(), ..Default::default() };
         assert!(build(&account(), &draft).is_err());
+    }
+
+    #[test]
+    fn sends_as_the_address_the_draft_names() {
+        let mut account = account();
+        account.aliases = vec![crate::config::Identity {
+            email: "sales@example.com".into(),
+            display_name: "Sales".into(),
+        }];
+
+        let draft = Draft {
+            from: "sales@example.com".into(),
+            to: "you@example.org".into(),
+            subject: "Hi".into(),
+            ..Default::default()
+        };
+        let raw = String::from_utf8(build(&account, &draft).unwrap().formatted()).unwrap();
+        assert!(raw.contains("sales@example.com"), "wrong sender in:\n{raw}");
+        assert!(!raw.contains("From: \"Me\" <me@example.com>"));
+    }
+
+    #[test]
+    fn an_unknown_from_falls_back_to_the_primary_address() {
+        let draft = Draft {
+            from: "stranger@example.com".into(),
+            to: "you@example.org".into(),
+            ..Default::default()
+        };
+        let raw = String::from_utf8(build(&account(), &draft).unwrap().formatted()).unwrap();
+        assert!(raw.contains("me@example.com"));
+        assert!(!raw.contains("stranger@example.com"));
+    }
+
+    #[test]
+    fn replies_from_the_alias_that_was_written_to() {
+        let mut account = account();
+        account.aliases = vec![crate::config::Identity {
+            email: "sales@example.com".into(),
+            display_name: "Sales".into(),
+        }];
+
+        let envelope = crate::mail::Envelope {
+            from: vec![crate::mail::Addr {
+                name: "Ada".into(),
+                email: "ada@example.org".into(),
+            }],
+            to: vec![crate::mail::Addr {
+                name: String::new(),
+                email: "Sales@Example.com".into(),
+            }],
+            ..Default::default()
+        };
+        let body = crate::mail::MessageBody::default();
+
+        let draft = reply_draft(&account, &envelope, &body, true);
+        assert_eq!(draft.from, "sales@example.com");
+        // None of the account's own addresses are copied back in.
+        assert!(!draft.cc.to_lowercase().contains("sales@example.com"));
+        assert!(draft.to.contains("ada@example.org"));
+    }
+
+    #[test]
+    fn a_reply_to_an_unknown_address_uses_the_primary_one() {
+        let envelope = crate::mail::Envelope {
+            from: vec![crate::mail::Addr {
+                name: String::new(),
+                email: "ada@example.org".into(),
+            }],
+            to: vec![crate::mail::Addr {
+                name: String::new(),
+                email: "list@example.net".into(),
+            }],
+            ..Default::default()
+        };
+        let draft =
+            reply_draft(&account(), &envelope, &crate::mail::MessageBody::default(), false);
+        // Empty means "the account's primary address".
+        assert!(draft.from.is_empty());
     }
 
     #[test]

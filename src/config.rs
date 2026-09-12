@@ -156,6 +156,25 @@ pub enum HtmlBackend {
     Servo,
 }
 
+/// An address this account may send as.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Identity {
+    pub email: String,
+    pub display_name: String,
+}
+
+impl Identity {
+    /// How the address reads in a From field.
+    pub fn label(&self) -> String {
+        if self.display_name.trim().is_empty() {
+            self.email.clone()
+        } else {
+            format!("{} <{}>", self.display_name.trim(), self.email)
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AccountConfig {
     pub id: AccountId,
@@ -187,6 +206,12 @@ pub struct AccountConfig {
     pub oauth_client_id: String,
     #[serde(default)]
     pub oauth_client_secret: String,
+
+    /// Further addresses this account may send as, beyond `email`. The
+    /// server has to accept them: most providers require an alias to be
+    /// verified before it will relay mail claiming to be from it.
+    #[serde(default)]
+    pub aliases: Vec<Identity>,
 
     /// Mailbox to open on startup.
     #[serde(default = "default_inbox")]
@@ -224,6 +249,7 @@ impl AccountConfig {
             auth: AuthMethod::OAuth2,
             oauth_client_id: String::new(),
             oauth_client_secret: String::new(),
+            aliases: Vec::new(),
             default_mailbox: default_inbox(),
             use_idle: true,
             enabled: true,
@@ -248,6 +274,7 @@ impl AccountConfig {
             auth: AuthMethod::Password,
             oauth_client_id: String::new(),
             oauth_client_secret: String::new(),
+            aliases: Vec::new(),
             default_mailbox: default_inbox(),
             use_idle: true,
             enabled: true,
@@ -261,6 +288,48 @@ impl AccountConfig {
         } else {
             &self.label
         }
+    }
+
+    /// Every address this account can send as, the primary one first.
+    ///
+    /// Blank and duplicate entries are dropped: a half-filled row in the
+    /// settings should not become an address the user can pick.
+    pub fn identities(&self) -> Vec<Identity> {
+        let primary = Identity {
+            email: self.email.trim().to_string(),
+            display_name: self.display_name.trim().to_string(),
+        };
+
+        let mut out = Vec::with_capacity(1 + self.aliases.len());
+        if !primary.email.is_empty() {
+            out.push(primary);
+        }
+        for alias in &self.aliases {
+            let email = alias.email.trim();
+            if email.is_empty() || out.iter().any(|kept| kept.email.eq_ignore_ascii_case(email))
+            {
+                continue;
+            }
+            out.push(Identity {
+                email: email.to_string(),
+                display_name: alias.display_name.trim().to_string(),
+            });
+        }
+        out
+    }
+
+    /// The identity to send as, given the address a draft asked for.
+    ///
+    /// An address that is no longer configured falls back to the primary
+    /// one, rather than sending as something the account cannot claim.
+    pub fn identity_for(&self, email: &str) -> Identity {
+        let identities = self.identities();
+        identities
+            .iter()
+            .find(|identity| identity.email.eq_ignore_ascii_case(email.trim()))
+            .cloned()
+            .or_else(|| identities.first().cloned())
+            .unwrap_or_default()
     }
 
     /// Short name for the sidebar, where horizontal space is scarce.
@@ -399,6 +468,57 @@ mod tests {
         let mut a = AccountConfig::gmail(0, email);
         a.label = label.to_string();
         a
+    }
+
+    #[test]
+    fn lists_the_primary_address_first() {
+        let mut a = account("me@example.com", "");
+        a.display_name = "Me".into();
+        a.aliases = vec![Identity {
+            email: "sales@example.com".into(),
+            display_name: "Sales".into(),
+        }];
+
+        let identities = a.identities();
+        assert_eq!(identities.len(), 2);
+        assert_eq!(identities[0].email, "me@example.com");
+        assert_eq!(identities[0].display_name, "Me");
+        assert_eq!(identities[1].email, "sales@example.com");
+    }
+
+    #[test]
+    fn drops_blank_and_duplicate_aliases() {
+        let mut a = account("me@example.com", "");
+        a.aliases = vec![
+            Identity { email: "  ".into(), display_name: "Nothing".into() },
+            // The primary address again, in a different case.
+            Identity { email: "ME@example.com".into(), display_name: "Dup".into() },
+            Identity { email: "sales@example.com".into(), display_name: String::new() },
+            Identity { email: "sales@example.com".into(), display_name: "Twice".into() },
+        ];
+        let emails: Vec<String> = a.identities().into_iter().map(|i| i.email).collect();
+        assert_eq!(emails, vec!["me@example.com", "sales@example.com"]);
+    }
+
+    #[test]
+    fn resolves_the_address_a_draft_asked_for() {
+        let mut a = account("me@example.com", "");
+        a.aliases =
+            vec![Identity { email: "sales@example.com".into(), display_name: "Sales".into() }];
+
+        assert_eq!(a.identity_for("sales@example.com").display_name, "Sales");
+        assert_eq!(a.identity_for("SALES@EXAMPLE.COM").display_name, "Sales");
+        // Unknown or unset falls back to the primary address.
+        assert_eq!(a.identity_for("stranger@example.com").email, "me@example.com");
+        assert_eq!(a.identity_for("").email, "me@example.com");
+    }
+
+    #[test]
+    fn an_identity_reads_as_a_from_line() {
+        let named = Identity { email: "me@example.com".into(), display_name: "Me".into() };
+        assert_eq!(named.label(), "Me <me@example.com>");
+        let bare = Identity { email: "me@example.com".into(), display_name: String::new() };
+        assert_eq!(bare.label(), "me@example.com");
     }
 
     #[test]

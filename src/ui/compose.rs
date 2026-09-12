@@ -4,7 +4,7 @@
 //! reopening the window (or switching messages behind it) never loses typing.
 
 use egui::{Context, RichText, Ui};
-use elegance::{Accent, Button, ButtonSize, Card, TextArea, TextInput, Theme, glyphs};
+use elegance::{Accent, Button, ButtonSize, Card, Select, TextArea, TextInput, Theme, glyphs};
 
 use super::format_size;
 use crate::config::AccountConfig;
@@ -107,12 +107,24 @@ fn body(
         ui.label(theme.faint_text("From"));
         match account {
             Some(account) => {
-                let from = if account.display_name.trim().is_empty() {
-                    account.email.clone()
+                let identities = account.identities();
+                if identities.len() > 1 {
+                    // Empty means the primary address, so resolve it to a
+                    // real one before offering the choice.
+                    let mut chosen = account.identity_for(&state.draft.from).email;
+                    ui.add(
+                        Select::new("compose-from", &mut chosen)
+                            .options(
+                                identities
+                                    .iter()
+                                    .map(|identity| (identity.email.clone(), identity.label())),
+                            )
+                            .width(320.0),
+                    );
+                    state.draft.from = chosen;
                 } else {
-                    format!("{} <{}>", account.display_name, account.email)
-                };
-                ui.label(theme.body_text(from));
+                    ui.label(theme.body_text(account.identity_for("").label()));
+                }
             }
             None => {
                 ui.label(

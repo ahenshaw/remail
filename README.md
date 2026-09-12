@@ -22,6 +22,8 @@ Servo rendering backend for message bodies.
   and PDF export already live.
 - **Recipient completion** from every address the account has seen, ranked so
   the people you write to come before the lists that write to you.
+- **Send as** any address configured for the account. A reply goes out from
+  whichever of them the message was addressed to.
 
 ## Building
 

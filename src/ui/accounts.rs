@@ -312,6 +312,56 @@ fn editor(
         }
 
         ui.add_space(10.0);
+        ui.label(theme.heading_text("Send as"));
+        ui.label(theme.faint_text(
+            "Extra addresses to offer in the From field. The server must already \
+             accept mail claiming to be from them; most providers require an alias \
+             to be verified first.",
+        ));
+        ui.add_space(4.0);
+
+        let mut remove = None;
+        for (index, alias) in account.aliases.iter_mut().enumerate() {
+            ui.horizontal(|ui| {
+                ui.add(
+                    TextInput::new(&mut alias.display_name)
+                        .hint("Name")
+                        .compact(true)
+                        .desired_width(130.0)
+                        .id_salt(egui::Id::new(("alias-name", index))),
+                );
+                ui.add(
+                    TextInput::new(&mut alias.email)
+                        .hint("address@example.com")
+                        .compact(true)
+                        .desired_width(230.0)
+                        .id_salt(egui::Id::new(("alias-email", index))),
+                );
+                if ui
+                    .add(
+                        Button::new(glyphs::X.to_string())
+                            .size(ButtonSize::Small)
+                            .outline()
+                            .accent(Accent::Red),
+                    )
+                    .on_hover_text("Remove this address")
+                    .clicked()
+                {
+                    remove = Some(index);
+                }
+            });
+        }
+        if let Some(index) = remove {
+            account.aliases.remove(index);
+        }
+        if ui
+            .add(Button::new(format!("{} Add address", glyphs::PLUS)).size(ButtonSize::Small).outline())
+            .clicked()
+        {
+            account.aliases.push(crate::config::Identity::default());
+        }
+
+        ui.add_space(10.0);
         ui.label(theme.heading_text("Servers"));
         ui.horizontal(|ui| {
             ui.add(TextInput::new(&mut account.imap_host).label("IMAP host").desired_width(220.0));

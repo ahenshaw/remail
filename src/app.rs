@@ -796,21 +796,12 @@ impl RemailApp {
             self.status = "Still loading that message".into();
             return;
         };
-        let self_address = self
-            .config
-            .read()
-            .unwrap()
-            .account(open.key.account)
-            .map(|a| a.email.clone())
-            .unwrap_or_default();
+        let Some(account) = self.config.read().unwrap().account(open.key.account).cloned()
+        else {
+            return;
+        };
 
-        let draft = crate::mail::smtp::reply_draft(
-            open.key.account,
-            &open.envelope,
-            body,
-            all,
-            &self_address,
-        );
+        let draft = crate::mail::smtp::reply_draft(&account, &open.envelope, body, all);
         self.compose = Some(ComposeState::new(draft));
 
         // Replying implies having read it.
@@ -824,7 +815,31 @@ impl RemailApp {
             self.status = "Still loading that message".into();
             return;
         };
-        let draft = crate::mail::smtp::forward_draft(open.key.account, &open.envelope, body);
+        // Forward from whichever address the message reached, so a thread
+        // stays on one identity.
+        let from = self
+            .config
+            .read()
+            .unwrap()
+            .account(open.key.account)
+            .map(|account| {
+                let identities = account.identities();
+                open.envelope
+                    .to
+                    .iter()
+                    .chain(open.envelope.cc.iter())
+                    .find_map(|address| {
+                        identities
+                            .iter()
+                            .find(|identity| identity.email.eq_ignore_ascii_case(&address.email))
+                    })
+                    .map(|identity| identity.email.clone())
+                    .unwrap_or_default()
+            })
+            .unwrap_or_default();
+
+        let draft =
+            crate::mail::smtp::forward_draft(open.key.account, from, &open.envelope, body);
         self.compose = Some(ComposeState::new(draft));
     }
 

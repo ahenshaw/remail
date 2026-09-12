@@ -311,6 +311,8 @@ impl MessageBody {
 #[derive(Debug, Clone, Default)]
 pub struct Draft {
     pub account: AccountId,
+    /// Address to send as. Empty means the account's primary one.
+    pub from: String,
     pub to: String,
     pub cc: String,
     pub bcc: String,
