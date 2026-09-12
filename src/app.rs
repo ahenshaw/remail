@@ -88,6 +88,8 @@ pub struct RemailApp {
     installed_theme: Option<crate::config::ThemeChoice>,
     /// Senders trusted to load remote content, refreshed when settings open.
     trusted_senders: u32,
+    /// When the panel layout last changed, for debouncing the config write.
+    layout_dirty_since: Option<Instant>,
     /// System fonts, scanned once and installed into egui on first use.
     fonts: crate::ui::fonts::FontLibrary,
     font_picker: crate::ui::accounts::FontPicker,
@@ -142,6 +144,7 @@ impl RemailApp {
             theme,
             installed_theme: None,
             trusted_senders: 0,
+            layout_dirty_since: None,
             fonts: crate::ui::fonts::FontLibrary::load(),
             font_picker: crate::ui::accounts::FontPicker::default(),
             keyring_available: secrets::available(),
@@ -1097,6 +1100,7 @@ impl eframe::App for RemailApp {
         self.sync_theme(ctx);
         self.handle_shortcuts(ctx);
         self.tick_mark_read();
+        self.flush_layout();
 
         #[cfg(feature = "servo")]
         self.update_servo(ctx);
@@ -1115,6 +1119,11 @@ impl eframe::App for RemailApp {
         let reading_fill = palette.card;
         let surface = |fill: egui::Color32, margin: i8| {
             egui::Frame::new().fill(fill).inner_margin(margin)
+        };
+
+        let (folders_width, messages_width) = {
+            let config = self.config.read().unwrap();
+            (config.ui.folders_width, config.ui.messages_width)
         };
 
         // Resolve each pane's font once per frame. After the first use of a
@@ -1147,7 +1156,7 @@ impl eframe::App for RemailApp {
         });
 
         egui::Panel::left("sidebar")
-            .default_size(200.0)
+            .default_size(folders_width)
             // Narrow enough to become a strip of icons and initials.
             .size_range(56.0..=460.0)
             .frame(surface(folders_fill, 2))
@@ -1171,7 +1180,7 @@ impl eframe::App for RemailApp {
             });
 
         egui::Panel::left("messages")
-            .default_size(380.0)
+            .default_size(messages_width)
             .size_range(180.0..=760.0)
             .frame(surface(messages_fill, 0))
             .show(ui, |ui| {
@@ -1186,6 +1195,7 @@ impl eframe::App for RemailApp {
                 action = action.take().or(self.reader(ui, reading_font.clone()));
             });
 
+        self.remember_panel_sizes(&ctx);
         self.dialogs(&ctx);
         self.toasts_frame(&ctx);
 
@@ -1203,6 +1213,42 @@ impl eframe::App for RemailApp {
 }
 
 impl RemailApp {
+    /// Records the panel widths the user has dragged to.
+    ///
+    /// egui owns the live size, so it is read back rather than tracked. Disk
+    /// writes are debounced: dragging a splitter changes the width on every
+    /// frame of the drag, and the config is not worth rewriting sixty times a
+    /// second.
+    fn remember_panel_sizes(&mut self, ctx: &Context) {
+        let width_of = |name: &str| {
+            egui::containers::panel::PanelState::load(ctx, egui::Id::new(name))
+                .map(|state| state.size().x)
+        };
+        let (Some(folders), Some(messages)) = (width_of("sidebar"), width_of("messages")) else {
+            return;
+        };
+
+        let mut config = self.config.write().unwrap();
+        // Sub-point differences are rounding, not intent.
+        let changed = (config.ui.folders_width - folders).abs() > 0.5
+            || (config.ui.messages_width - messages).abs() > 0.5;
+        if changed {
+            config.ui.folders_width = folders;
+            config.ui.messages_width = messages;
+            drop(config);
+            self.layout_dirty_since = Some(Instant::now());
+        }
+    }
+
+    /// Writes a debounced layout change once the drag has settled.
+    fn flush_layout(&mut self) {
+        const SETTLE: Duration = Duration::from_millis(800);
+        if self.layout_dirty_since.is_some_and(|at| at.elapsed() >= SETTLE) {
+            self.layout_dirty_since = None;
+            self.save_config();
+        }
+    }
+
     /// Installs the theme when the setting changes, and keeps the body font
     /// size in step with it.
     fn sync_theme(&mut self, ctx: &Context) {

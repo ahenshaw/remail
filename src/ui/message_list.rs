@@ -32,6 +32,47 @@ pub struct ListInput<'a> {
     pub empty_message: &'a str,
 }
 
+/// Vertical geometry of a row, in points, derived from the pane's text size.
+///
+/// Three lines of text need more than three line-heights: without leading
+/// above and below, and between the lines, the row reads as a block rather
+/// than as a sender, a subject and a preview.
+#[derive(Clone, Copy)]
+struct RowMetrics {
+    height: f32,
+    /// Baselines of the three text lines, relative to the row top.
+    sender_y: f32,
+    subject_y: f32,
+    preview_y: f32,
+}
+
+impl RowMetrics {
+    fn new(size: f32, compact: bool) -> Self {
+        if compact {
+            let padding = size * 0.42;
+            return Self {
+                height: (size + padding * 2.0).round(),
+                sender_y: padding,
+                subject_y: padding,
+                preview_y: padding,
+            };
+        }
+
+        // Leading between lines, and the same again above and below, so rows
+        // are separated by as much space as the lines within one.
+        let leading = size * 0.42;
+        let padding = size * 0.5;
+        let line = size * 1.05;
+
+        Self {
+            height: (padding * 2.0 + line * 2.0 + size * 0.86 + leading * 2.0).round(),
+            sender_y: padding,
+            subject_y: padding + line + leading,
+            preview_y: padding + (line + leading) * 2.0,
+        }
+    }
+}
+
 /// What the list drew, so the app can prefetch what the user is looking at.
 pub struct ListOutput {
     pub action: Option<Action>,
@@ -52,11 +93,8 @@ pub fn show(ui: &mut Ui, input: ListInput<'_>) -> ListOutput {
         return ListOutput { action: None, visible: 0..0 };
     }
 
-    let row_height = if input.compact {
-        input.font.size * 2.0
-    } else {
-        input.font.size * 3.6
-    };
+    let metrics = RowMetrics::new(input.font.size, input.compact);
+    let row_height = metrics.height;
 
     let cursor_index = input
         .cursor
@@ -81,13 +119,14 @@ pub fn show(ui: &mut Ui, input: ListInput<'_>) -> ListOutput {
             if ui.is_rect_visible(rect) {
                 draw_row(
                     ui, rect, envelope, index, is_cursor, is_selected, &response, &input,
+                    metrics,
                 );
             }
 
             // The star sits in its own hit area at the right edge.
             let star_rect = Rect::from_min_size(
-                pos2(rect.right() - 26.0, rect.top() + 6.0),
-                Vec2::splat(20.0),
+                pos2(rect.right() - 30.0, rect.top() + metrics.sender_y - 2.0),
+                Vec2::splat(22.0),
             );
             let star = ui.interact(
                 star_rect,
@@ -125,6 +164,7 @@ fn draw_row(
     is_selected: bool,
     response: &egui::Response,
     input: &ListInput<'_>,
+    metrics: RowMetrics,
 ) {
     let visuals = ui.visuals();
     let painter = ui.painter();
@@ -174,14 +214,18 @@ fn draw_row(
     };
 
     let size = input.font.size;
-    let left = rect.left() + 10.0;
-    let right = rect.right() - 34.0;
+    let left = rect.left() + 12.0;
+    let right = rect.right() - 38.0;
 
     // Unread marker doubles as the left gutter.
     if unread {
-        painter.circle_filled(pos2(left + 3.0, rect.top() + size * 0.95), 3.5, palette.blue);
+        painter.circle_filled(
+            pos2(left + 3.0, rect.top() + metrics.sender_y + size * 0.5),
+            3.5,
+            palette.blue,
+        );
     }
-    let text_left = left + 14.0;
+    let text_left = left + 16.0;
 
     let date = format_date_short(envelope.date);
     let date_width = if date.is_empty() {
@@ -193,7 +237,11 @@ fn draw_row(
             weak,
         );
         let width = galley.size().x;
-        painter.galley(pos2(right - width, rect.top() + 7.0), galley, weak);
+        painter.galley(
+            pos2(right - width, rect.top() + metrics.sender_y + size * 0.1),
+            galley,
+            weak,
+        );
         width + 10.0
     };
 
@@ -206,7 +254,7 @@ fn draw_row(
     let first_line_width = (right - date_width - text_left).max(40.0);
     let _ = paint_truncated(
         painter,
-        pos2(text_left, rect.top() + 6.0),
+        pos2(text_left, rect.top() + metrics.sender_y),
         first_line_width,
         &sender,
         font(size * 0.95),
@@ -222,7 +270,7 @@ fn draw_row(
         let subject_left = text_left + first_line_width * 0.32;
         let _ = paint_truncated(
             painter,
-            pos2(subject_left, rect.top() + 6.0),
+            pos2(subject_left, rect.top() + metrics.subject_y),
             (right - date_width - subject_left).max(40.0),
             &compact_subject(envelope, input.show_folder),
             font(size * 0.95),
@@ -231,7 +279,7 @@ fn draw_row(
     } else {
         let _ = paint_truncated(
             painter,
-            pos2(text_left, rect.top() + size * 1.5),
+            pos2(text_left, rect.top() + metrics.subject_y),
             right - text_left,
             display_subject(envelope),
             font(size * 0.95),
@@ -248,7 +296,7 @@ fn draw_row(
                 painter.layout_no_wrap(folder.to_string(), font(size * 0.72), palette.blue);
             let padding = Vec2::new(5.0, 1.5);
             let chip = Rect::from_min_size(
-                pos2(preview_left, rect.top() + size * 2.5),
+                pos2(preview_left, rect.top() + metrics.preview_y - 1.5),
                 galley.size() + padding * 2.0,
             );
             painter.rect_filled(chip, 3.0, super::accent_tint(palette, 0.86));
@@ -259,7 +307,7 @@ fn draw_row(
         if !envelope.preview.is_empty() {
             let _ = paint_truncated(
                 painter,
-                pos2(preview_left, rect.top() + size * 2.6),
+                pos2(preview_left, rect.top() + metrics.preview_y),
                 right - preview_left,
                 &envelope.preview,
                 font(size * 0.82),
@@ -280,12 +328,46 @@ fn draw_row(
 
     let starred = envelope.flags.has(Flags::FLAGGED);
     painter.text(
-        pos2(rect.right() - 16.0, rect.top() + 8.0),
+        pos2(rect.right() - 18.0, rect.top() + metrics.sender_y),
         Align2::CENTER_TOP,
         if starred { "\u{2605}" } else { "\u{2606}" },
         font(size * 0.95),
         if starred { Color32::from_rgb(230, 180, 60) } else { weak.gamma_multiply(0.6) },
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rows_leave_room_for_every_line() {
+        for size in [10.0_f32, 14.0, 20.0, 26.0] {
+            let m = RowMetrics::new(size, false);
+            assert!(m.sender_y > 0.0, "no padding above the first line");
+            assert!(m.subject_y > m.sender_y + size, "sender and subject overlap");
+            assert!(m.preview_y > m.subject_y + size, "subject and preview overlap");
+            assert!(
+                m.height >= m.preview_y + size,
+                "preview is clipped at size {size}"
+            );
+        }
+    }
+
+    #[test]
+    fn rows_grow_with_the_text() {
+        let small = RowMetrics::new(11.0, false);
+        let large = RowMetrics::new(22.0, false);
+        assert!(large.height > small.height * 1.8, "height did not track size");
+    }
+
+    #[test]
+    fn a_compact_row_holds_one_centred_line() {
+        let m = RowMetrics::new(14.0, true);
+        assert_eq!(m.sender_y, m.subject_y);
+        assert!(m.height >= m.sender_y + 14.0);
+        assert!(m.height < RowMetrics::new(14.0, false).height);
+    }
 }
 
 /// Subject for a compact row, with the folder appended while searching.

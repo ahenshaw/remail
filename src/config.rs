@@ -297,6 +297,10 @@ pub struct UiSettings {
     pub messages: PaneStyle,
     pub reading: PaneStyle,
     pub compact_list: bool,
+    /// Width of the folder pane, in points. Restored on startup.
+    pub folders_width: f32,
+    /// Width of the message list pane, in points.
+    pub messages_width: f32,
     /// Mark a message `\Seen` after it has been open this long. 0 disables.
     pub mark_read_after_secs: f32,
 }
@@ -314,6 +318,8 @@ impl Default for UiSettings {
             messages: PaneStyle::default(),
             reading: PaneStyle::default(),
             compact_list: false,
+            folders_width: 200.0,
+            messages_width: 380.0,
             mark_read_after_secs: 1.5,
         }
     }
