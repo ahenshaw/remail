@@ -85,6 +85,8 @@ pub struct RemailApp {
     theme: Theme,
     /// Theme currently installed, so it is only reinstalled on change.
     installed_theme: Option<crate::config::ThemeChoice>,
+    /// Senders trusted to load remote content, refreshed when settings open.
+    trusted_senders: u32,
     keyring_available: bool,
 
     #[cfg(feature = "servo")]
@@ -134,6 +136,7 @@ impl RemailApp {
             pending_toasts: Vec::new(),
             theme,
             installed_theme: None,
+            trusted_senders: 0,
             keyring_available: secrets::available(),
             #[cfg(feature = "servo")]
             servo: None,
@@ -445,24 +448,28 @@ impl RemailApp {
             }
 
             Action::LoadRemoteImages => {
-                if let Some(open) = &mut self.open_message {
-                    open.allow_remote = true;
-                    if let Some(body) = &open.body {
-                        open.prepared = Prepared::from_parts(
-                            body.html.as_deref(),
-                            body.text.as_deref(),
-                            true,
-                        );
-                    }
-                    self.textures.clear();
-                    #[cfg(feature = "servo")]
-                    if let Some(servo) = &mut self.servo {
-                        // Force a reload so the engine picks up the new markup.
-                        servo.load(u64::MAX, "");
+                if let Some(open) = &self.open_message {
+                    let key = remote_key(&open.envelope, &open.key.mailbox);
+                    if let Err(e) = self.store.allow_remote_message(open.key.account, &key) {
+                        tracing::warn!("could not remember image permission: {e}");
                     }
                 }
+                self.show_remote_images();
             }
 
+            Action::AllowRemoteSender => {
+                if let Some(open) = &self.open_message {
+                    let sender =
+                        open.envelope.from.first().map(|a| a.email.clone()).unwrap_or_default();
+                    match self.store.allow_remote_sender(open.key.account, &sender) {
+                        Ok(()) => {
+                            self.status = format!("Loading remote content from {sender}")
+                        }
+                        Err(e) => tracing::warn!("could not remember sender: {e}"),
+                    }
+                }
+                self.show_remote_images();
+            }
             Action::OpenUrl(url) => self.open_url(&url),
             Action::SaveAttachment(index) => self.save_attachment(index),
         }
@@ -498,7 +505,15 @@ impl RemailApp {
             return;
         }
 
-        let allow_remote = self.config.read().unwrap().ui.load_remote_content;
+        // Remote content is allowed when the setting says always, or when
+        // this message or its sender was trusted on a previous visit.
+        let sender = envelope.from.first().map(|a| a.email.clone()).unwrap_or_default();
+        let allow_remote = self.config.read().unwrap().ui.load_remote_content
+            || self
+                .store
+                .remote_allowed(account, &remote_key(&envelope, &mailbox), &sender)
+                .unwrap_or(false);
+
         self.open_message = Some(OpenMessage {
             key,
             envelope,
@@ -714,6 +729,41 @@ impl RemailApp {
             .or_else(|| self.config.read().unwrap().accounts.first().map(|a| a.id))
     }
 
+    /// Re-prepares the open message with remote content permitted.
+    fn show_remote_images(&mut self) {
+        let Some(open) = &mut self.open_message else { return };
+        open.allow_remote = true;
+        if let Some(body) = &open.body {
+            open.prepared =
+                Prepared::from_parts(body.html.as_deref(), body.text.as_deref(), true);
+        }
+        self.textures.clear();
+        #[cfg(feature = "servo")]
+        if let Some(servo) = &mut self.servo {
+            // Force a reload so the engine picks up the new markup.
+            servo.load(u64::MAX, "");
+        }
+    }
+
+    /// Re-prepares the open message with remote content blocked again.
+    fn hide_remote_images(&mut self) {
+        let Some(open) = &mut self.open_message else { return };
+        if !open.allow_remote {
+            return;
+        }
+        open.allow_remote = false;
+        if let Some(body) = &open.body {
+            open.prepared =
+                Prepared::from_parts(body.html.as_deref(), body.text.as_deref(), false);
+        }
+        self.textures.clear();
+        self.remote_images.clear();
+        #[cfg(feature = "servo")]
+        if let Some(servo) = &mut self.servo {
+            servo.load(u64::MAX, "");
+        }
+    }
+
     fn open_url(&mut self, url: &str) {
         // Only hand the system browser schemes a mail reader should follow.
         let allowed = ["http://", "https://", "mailto:", "tel:"];
@@ -775,6 +825,19 @@ struct PendingToast {
     title: String,
     description: Option<String>,
     tone: BadgeTone,
+}
+
+/// Identifies a message for remembering remote-content permission.
+///
+/// `Message-ID` is preferred because it survives the message being moved
+/// between folders and a `UIDVALIDITY` reset, both of which change the UID.
+/// The mailbox and UID are only a fallback for messages that carry no id.
+fn remote_key(envelope: &Envelope, mailbox: &str) -> String {
+    if envelope.message_id.trim().is_empty() {
+        format!("{mailbox}#{}", envelope.uid)
+    } else {
+        envelope.message_id.trim().to_string()
+    }
 }
 
 /// Splits the rows matching `uids` out of `list` and returns them, preserving
@@ -844,6 +907,19 @@ mod tests {
 
     fn uids(list: &[Envelope]) -> Vec<u32> {
         list.iter().map(|e| e.uid).collect()
+    }
+
+    #[test]
+    fn prefers_the_message_id_as_a_remote_key() {
+        let mut envelope = Envelope { uid: 7, ..Default::default() };
+        envelope.message_id = "  <abc@example.com>  ".into();
+        assert_eq!(remote_key(&envelope, "INBOX"), "<abc@example.com>");
+    }
+
+    #[test]
+    fn falls_back_to_mailbox_and_uid_without_a_message_id() {
+        let envelope = Envelope { uid: 7, ..Default::default() };
+        assert_eq!(remote_key(&envelope, "INBOX"), "INBOX#7");
     }
 
     #[test]
@@ -1097,6 +1173,7 @@ impl RemailApp {
                     .clicked()
                 {
                     self.settings_open = true;
+                    self.trusted_senders = self.count_trusted_senders();
                 }
                 if ui
                     .add(Button::new(glyphs::KEY.to_string()).size(ButtonSize::Small).outline())
@@ -1513,12 +1590,13 @@ impl RemailApp {
                     &mut open,
                     &mut config,
                     servo_available,
+                    self.trusted_senders,
                     &self.theme,
                 )
             };
             self.settings_open = open;
-            if changed.is_some() {
-                self.save_config();
+            if let Some(action) = changed {
+                self.apply_accounts_action(action);
             }
         }
     }
@@ -1552,7 +1630,33 @@ impl RemailApp {
                 }
             }
             AccountsAction::SettingsChanged => self.save_config(),
+            AccountsAction::ForgetRemoteSenders => {
+                let accounts: Vec<AccountId> = {
+                    let config = self.config.read().unwrap();
+                    config.accounts.iter().map(|a| a.id).collect()
+                };
+                for account in accounts {
+                    if let Err(e) = self.store.forget_remote_permissions(account) {
+                        self.status = format!("Could not revoke permissions: {e}");
+                    }
+                }
+                self.trusted_senders = 0;
+                // Revoking should be visible at once, including in whatever
+                // is open, rather than only from the next message onwards.
+                self.hide_remote_images();
+                self.save_config();
+                self.toast("Remote content permissions cleared", None, BadgeTone::Ok);
+            }
         }
+    }
+
+    fn count_trusted_senders(&self) -> u32 {
+        let config = self.config.read().unwrap();
+        config
+            .accounts
+            .iter()
+            .filter_map(|a| self.store.remote_sender_count(a.id).ok())
+            .sum()
     }
 
     fn save_config(&mut self) {

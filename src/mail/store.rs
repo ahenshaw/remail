@@ -99,6 +99,16 @@ impl Store {
             );
 
             CREATE INDEX IF NOT EXISTS body_by_age ON body (fetched);
+
+            -- Remote-content permissions the user has granted. `kind` is 0
+            -- for a single message and 1 for a sender address.
+            CREATE TABLE IF NOT EXISTS remote_allowed (
+                account INTEGER NOT NULL,
+                kind    INTEGER NOT NULL,
+                value   TEXT    NOT NULL,
+                added   INTEGER NOT NULL,
+                PRIMARY KEY (account, kind, value)
+            );
             "#,
         )?;
         Ok(())
@@ -373,6 +383,76 @@ impl Store {
         Ok(())
     }
 
+    // -- remote content permissions ----------------------------------------
+
+    /// Records that one message may load remote content.
+    pub fn allow_remote_message(&self, account: AccountId, key: &str) -> Result<()> {
+        self.allow_remote(account, KIND_MESSAGE, key)
+    }
+
+    /// Records that every message from an address may load remote content.
+    pub fn allow_remote_sender(&self, account: AccountId, address: &str) -> Result<()> {
+        self.allow_remote(account, KIND_SENDER, &address.trim().to_ascii_lowercase())
+    }
+
+    fn allow_remote(&self, account: AccountId, kind: i64, value: &str) -> Result<()> {
+        if value.is_empty() {
+            return Ok(());
+        }
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO remote_allowed (account, kind, value, added) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(account, kind, value) DO UPDATE SET added = excluded.added",
+            params![account, kind, value, now_secs()],
+        )?;
+        Ok(())
+    }
+
+    /// Whether this message may load remote content, either because it was
+    /// allowed individually or because its sender is trusted.
+    pub fn remote_allowed(
+        &self,
+        account: AccountId,
+        message_key: &str,
+        sender: &str,
+    ) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        let found = conn
+            .query_row(
+                "SELECT 1 FROM remote_allowed
+                 WHERE account = ?1
+                   AND ((kind = ?2 AND value = ?3) OR (kind = ?4 AND value = ?5))
+                 LIMIT 1",
+                params![
+                    account,
+                    KIND_MESSAGE,
+                    message_key,
+                    KIND_SENDER,
+                    sender.trim().to_ascii_lowercase()
+                ],
+                |_| Ok(()),
+            )
+            .optional()?;
+        Ok(found.is_some())
+    }
+
+    /// How many senders are trusted, for the settings summary.
+    pub fn remote_sender_count(&self, account: AccountId) -> Result<u32> {
+        let conn = self.conn.lock().unwrap();
+        Ok(conn.query_row(
+            "SELECT count(*) FROM remote_allowed WHERE account = ?1 AND kind = ?2",
+            params![account, KIND_SENDER],
+            |r| r.get(0),
+        )?)
+    }
+
+    /// Revokes every remote-content permission for an account.
+    pub fn forget_remote_permissions(&self, account: AccountId) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM remote_allowed WHERE account = ?1", params![account])?;
+        Ok(())
+    }
+
     // -- bodies ------------------------------------------------------------
 
     pub fn save_raw(
@@ -455,12 +535,16 @@ impl Store {
     /// Removes every trace of an account.
     pub fn forget_account(&self, account: AccountId) -> Result<()> {
         let conn = self.conn.lock().unwrap();
-        for table in ["envelope", "body", "mailbox"] {
+        for table in ["envelope", "body", "mailbox", "remote_allowed"] {
             conn.execute(&format!("DELETE FROM {table} WHERE account = ?1"), params![account])?;
         }
         Ok(())
     }
 }
+
+/// Discriminators for `remote_allowed.kind`.
+const KIND_MESSAGE: i64 = 0;
+const KIND_SENDER: i64 = 1;
 
 fn parse_addrs(json: String) -> Vec<Addr> {
     serde_json::from_str(&json).unwrap_or_default()
@@ -496,5 +580,71 @@ fn special_from_i64(v: i64) -> SpecialUse {
         5 => SpecialUse::Archive,
         6 => SpecialUse::All,
         _ => SpecialUse::Normal,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn store() -> Store {
+        Store::open_memory().expect("in-memory store")
+    }
+
+    #[test]
+    fn remembers_a_single_message() {
+        let store = store();
+        assert!(!store.remote_allowed(1, "msg-1", "a@example.com").unwrap());
+
+        store.allow_remote_message(1, "msg-1").unwrap();
+        assert!(store.remote_allowed(1, "msg-1", "a@example.com").unwrap());
+        // Allowing one message says nothing about the rest of the sender.
+        assert!(!store.remote_allowed(1, "msg-2", "a@example.com").unwrap());
+    }
+
+    #[test]
+    fn remembers_a_sender_for_every_message() {
+        let store = store();
+        store.allow_remote_sender(1, "Alerts@Example.com").unwrap();
+        // Addresses are matched case-insensitively.
+        assert!(store.remote_allowed(1, "msg-9", "alerts@example.com").unwrap());
+        assert!(store.remote_allowed(1, "msg-8", "ALERTS@EXAMPLE.COM").unwrap());
+        assert!(!store.remote_allowed(1, "msg-9", "other@example.com").unwrap());
+    }
+
+    #[test]
+    fn keeps_permissions_per_account() {
+        let store = store();
+        store.allow_remote_sender(1, "a@example.com").unwrap();
+        assert!(!store.remote_allowed(2, "m", "a@example.com").unwrap());
+    }
+
+    #[test]
+    fn counts_and_revokes_sender_permissions() {
+        let store = store();
+        store.allow_remote_sender(1, "a@example.com").unwrap();
+        store.allow_remote_sender(1, "b@example.com").unwrap();
+        store.allow_remote_message(1, "msg-1").unwrap();
+        assert_eq!(store.remote_sender_count(1).unwrap(), 2);
+
+        store.forget_remote_permissions(1).unwrap();
+        assert_eq!(store.remote_sender_count(1).unwrap(), 0);
+        assert!(!store.remote_allowed(1, "msg-1", "a@example.com").unwrap());
+    }
+
+    #[test]
+    fn ignores_empty_keys() {
+        let store = store();
+        store.allow_remote_message(1, "").unwrap();
+        store.allow_remote_sender(1, "  ").unwrap();
+        assert!(!store.remote_allowed(1, "", "").unwrap());
+    }
+
+    #[test]
+    fn granting_twice_is_harmless() {
+        let store = store();
+        store.allow_remote_sender(1, "a@example.com").unwrap();
+        store.allow_remote_sender(1, "a@example.com").unwrap();
+        assert_eq!(store.remote_sender_count(1).unwrap(), 1);
     }
 }

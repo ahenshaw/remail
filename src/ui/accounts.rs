@@ -26,6 +26,8 @@ pub enum AccountsAction {
     Remove(AccountId),
     /// Settings changed and need saving.
     SettingsChanged,
+    /// Revoke every remembered remote-content permission.
+    ForgetRemoteSenders,
 }
 
 pub struct AccountsDialog {
@@ -400,6 +402,8 @@ pub fn settings(
     open: &mut bool,
     config: &mut Config,
     servo_available: bool,
+    // Senders trusted to load remote content, across all accounts.
+    trusted_senders: u32,
     theme: &Theme,
 ) -> Option<AccountsAction> {
     let mut action = None;
@@ -410,6 +414,7 @@ pub fn settings(
         .max_width(520.0)
         .show(ctx, |ui| {
             let before = config.ui.clone();
+            let mut forget_senders = false;
 
             ui.label(theme.heading_text("Appearance"));
             let mut choice = config.ui.theme;
@@ -488,6 +493,26 @@ pub fn settings(
                 ui.label(theme.faint_text(
                     "Senders can tell when a message is opened. Leaving this off asks per message.",
                 ));
+            } else {
+                ui.horizontal(|ui| {
+                    ui.label(theme.faint_text(match trusted_senders {
+                        0 => "No senders are trusted to load remote content.".to_string(),
+                        1 => "1 sender is trusted to load remote content.".to_string(),
+                        n => format!("{n} senders are trusted to load remote content."),
+                    }));
+                    if ui
+                        .add(
+                            Button::new("Forget")
+                                .size(ButtonSize::Small)
+                                .outline()
+                                .enabled(trusted_senders > 0),
+                        )
+                        .on_hover_text("Ask again for every sender and message")
+                        .clicked()
+                    {
+                        forget_senders = true;
+                    }
+                });
             }
             ui.add(
                 elegance::Slider::new(&mut config.ui.mark_read_after_secs, 0.0..=10.0)
@@ -508,7 +533,9 @@ pub fn settings(
                 "Polling only applies to servers without IDLE support.",
             ));
 
-            if !settings_equal(&before, &config.ui) {
+            if forget_senders {
+                action = Some(AccountsAction::ForgetRemoteSenders);
+            } else if !settings_equal(&before, &config.ui) {
                 action = Some(AccountsAction::SettingsChanged);
             }
         });

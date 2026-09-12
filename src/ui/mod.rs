@@ -43,8 +43,11 @@ pub enum Action {
     Refresh,
     /// Run a server-side search for the current query.
     SearchServer(String),
-    /// Load the remote images this message asked for.
+    /// Load the remote images this message asked for, and remember the
+    /// decision for this message.
     LoadRemoteImages,
+    /// Trust this sender's remote content from now on.
+    AllowRemoteSender,
     /// Open a URL in the system browser.
     OpenUrl(String),
     /// Write an attachment to disk.

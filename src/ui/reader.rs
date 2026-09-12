@@ -46,7 +46,8 @@ pub fn show(ui: &mut Ui, input: ReaderInput<'_>) -> Option<Action> {
 
     if let Some(prepared) = input.prepared {
         if prepared.blocked_remote > 0 && !input.allow_remote {
-            privacy_notice(ui, prepared.blocked_remote, &mut action);
+            let sender = envelope.from.first().map(|a| a.short());
+            privacy_notice(ui, prepared.blocked_remote, sender, &mut action);
         }
     }
 
@@ -235,7 +236,16 @@ fn header(
 
 /// Explains what was withheld and offers to load it. Worth being explicit
 /// about: loading these tells the sender the message was opened.
-fn privacy_notice(ui: &mut Ui, blocked: usize, action: &mut Option<Action>) {
+///
+/// The two choices differ in scope, so they are separate buttons. Loading
+/// this message reveals only what opening it already revealed. Trusting the
+/// sender also reveals future opens, before you have decided on them.
+fn privacy_notice(
+    ui: &mut Ui,
+    blocked: usize,
+    sender: Option<&str>,
+    action: &mut Option<Action>,
+) {
     ui.add_space(6.0);
     Callout::new(CalloutTone::Info)
         .icon(glyphs::EYE_OFF.to_string())
@@ -247,8 +257,24 @@ fn privacy_notice(ui: &mut Ui, blocked: usize, action: &mut Option<Action>) {
         .body("Loading them tells the sender you opened this message.")
         .tinted()
         .show(ui, |ui| {
-            if ui.add(Button::new("Load images").size(ButtonSize::Small)).clicked() {
+            if ui
+                .add(Button::new("Load images").size(ButtonSize::Small))
+                .on_hover_text("Remembered for this message")
+                .clicked()
+            {
                 *action = Some(Action::LoadRemoteImages);
+            }
+            if let Some(sender) = sender {
+                if ui
+                    .add(Button::new("Always from sender").size(ButtonSize::Small).outline())
+                    .on_hover_text(format!(
+                        "Load remote content from {sender} without asking, including \
+                         in messages you have not opened yet"
+                    ))
+                    .clicked()
+                {
+                    *action = Some(Action::AllowRemoteSender);
+                }
             }
         });
     ui.add_space(4.0);

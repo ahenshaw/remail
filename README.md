@@ -134,6 +134,12 @@ dropped and rebuilt.
   removed before either renderer sees the markup.
 - Remote images are withheld by default; the reader says how many and offers to
   load them, because loading them tells the sender you opened the message.
+  The choice is remembered, at either of two scopes: **Load images** applies to
+  that message alone, and **Always from sender** applies to everything from
+  that address. They are separate buttons because they differ in what they
+  give away — the first reveals only an open you already performed, the second
+  reveals future opens before you have decided on them. Settings shows how many
+  senders are trusted and revokes them all in one click.
 - Only `http`, `https`, `mailto`, `tel`, `cid` and `data` URLs survive
   sanitization, and only those schemes are handed to the system browser.
 - Attachment filenames are stripped of path separators before saving, and
