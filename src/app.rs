@@ -10,9 +10,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use egui::Context;
-use elegance::{
-    Accent, Button, ButtonSize, Theme, TextInput, Toast, Toasts, BadgeTone, glyphs,
-};
+use elegance::{Accent, BadgeTone, Button, ButtonSize, TextInput, Theme, Toast, Toasts, glyphs};
 
 use crate::config::{AccountId, Config};
 use crate::html::Prepared;
@@ -96,11 +94,6 @@ pub struct RemailApp {
     fonts: crate::ui::fonts::FontLibrary,
     font_picker: crate::ui::accounts::FontPicker,
     keyring_available: bool,
-
-    #[cfg(feature = "servo")]
-    servo: Option<crate::html::servo::ServoView>,
-    #[cfg(feature = "servo")]
-    servo_failed: bool,
 }
 
 impl RemailApp {
@@ -151,10 +144,6 @@ impl RemailApp {
             fonts: crate::ui::fonts::FontLibrary::load(),
             font_picker: crate::ui::accounts::FontPicker::default(),
             keyring_available: secrets::available(),
-            #[cfg(feature = "servo")]
-            servo: None,
-            #[cfg(feature = "servo")]
-            servo_failed: false,
         };
 
         app.restore_cached_view();
@@ -260,10 +249,10 @@ impl RemailApp {
             }
 
             Event::MailboxStats { account, mailbox, unseen } => {
-                if let Some(view) = self.accounts.get_mut(&account) {
-                    if let Some(info) = view.mailboxes.iter_mut().find(|m| m.name == mailbox) {
-                        info.unseen = unseen;
-                    }
+                if let Some(view) = self.accounts.get_mut(&account)
+                    && let Some(info) = view.mailboxes.iter_mut().find(|m| m.name == mailbox)
+                {
+                    info.unseen = unseen;
                 }
             }
 
@@ -325,10 +314,10 @@ impl RemailApp {
                             envelope.flags = flags;
                         }
                     }
-                    if let Some(open) = &mut self.open_message {
-                        if open.key.row() == key {
-                            open.envelope.flags = flags;
-                        }
+                    if let Some(open) = &mut self.open_message
+                        && open.key.row() == key
+                    {
+                        open.envelope.flags = flags;
                     }
                 }
             }
@@ -357,11 +346,8 @@ impl RemailApp {
                     return;
                 }
                 let allow_remote = open.allow_remote;
-                open.prepared = Prepared::from_parts(
-                    body.html.as_deref(),
-                    body.text.as_deref(),
-                    allow_remote,
-                );
+                open.prepared =
+                    Prepared::from_parts(body.html.as_deref(), body.text.as_deref(), allow_remote);
                 open.body = Some(body);
                 open.opened_at = Instant::now();
                 self.textures.clear();
@@ -510,9 +496,7 @@ impl RemailApp {
                     let sender =
                         open.envelope.from.first().map(|a| a.email.clone()).unwrap_or_default();
                     match self.store.allow_remote_sender(open.key.account, &sender) {
-                        Ok(()) => {
-                            self.status = format!("Loading remote content from {sender}")
-                        }
+                        Ok(()) => self.status = format!("Loading remote content from {sender}"),
                         Err(e) => tracing::warn!("could not remember sender: {e}"),
                     }
                 }
@@ -537,19 +521,11 @@ impl RemailApp {
                             .or_else(|| view.mailboxes.iter().find(|m| m.delimiter.is_some()))
                     })
                     .and_then(|mailbox| mailbox.delimiter.clone());
-                self.folder_edit = Some(FolderEdit::New {
-                    account,
-                    parent,
-                    delimiter,
-                    name: String::new(),
-                });
+                self.folder_edit =
+                    Some(FolderEdit::New { account, parent, delimiter, name: String::new() });
             }
             Action::RenameFolder { account, mailbox } => {
-                let name = mailbox
-                    .rsplit(['/', '.'])
-                    .next()
-                    .unwrap_or(&mailbox)
-                    .to_string();
+                let name = mailbox.rsplit(['/', '.']).next().unwrap_or(&mailbox).to_string();
                 self.folder_edit = Some(FolderEdit::Rename { account, mailbox, name });
             }
             Action::DeleteFolder { account, mailbox } => {
@@ -673,10 +649,10 @@ impl RemailApp {
                 envelope.flags.set(bit, add);
             }
         }
-        if let Some(open) = &mut self.open_message {
-            if rows.contains(&open.key.row()) {
-                open.envelope.flags.set(bit, add);
-            }
+        if let Some(open) = &mut self.open_message
+            && rows.contains(&open.key.row())
+        {
+            open.envelope.flags.set(bit, add);
         }
 
         // One command per mailbox: a server operates on the selected one.
@@ -804,8 +780,7 @@ impl RemailApp {
             self.status = "Still loading that message".into();
             return;
         };
-        let Some(account) = self.config.read().unwrap().account(open.key.account).cloned()
-        else {
+        let Some(account) = self.config.read().unwrap().account(open.key.account).cloned() else {
             return;
         };
 
@@ -846,8 +821,7 @@ impl RemailApp {
             })
             .unwrap_or_default();
 
-        let draft =
-            crate::mail::smtp::forward_draft(open.key.account, from, &open.envelope, body);
+        let draft = crate::mail::smtp::forward_draft(open.key.account, from, &open.envelope, body);
         self.compose = Some(ComposeState::new(draft));
     }
 
@@ -863,15 +837,9 @@ impl RemailApp {
         let Some(open) = &mut self.open_message else { return };
         open.allow_remote = true;
         if let Some(body) = &open.body {
-            open.prepared =
-                Prepared::from_parts(body.html.as_deref(), body.text.as_deref(), true);
+            open.prepared = Prepared::from_parts(body.html.as_deref(), body.text.as_deref(), true);
         }
         self.textures.clear();
-        #[cfg(feature = "servo")]
-        if let Some(servo) = &mut self.servo {
-            // Force a reload so the engine picks up the new markup.
-            servo.load(u64::MAX, "");
-        }
     }
 
     /// Re-prepares the open message with remote content blocked again.
@@ -882,15 +850,10 @@ impl RemailApp {
         }
         open.allow_remote = false;
         if let Some(body) = &open.body {
-            open.prepared =
-                Prepared::from_parts(body.html.as_deref(), body.text.as_deref(), false);
+            open.prepared = Prepared::from_parts(body.html.as_deref(), body.text.as_deref(), false);
         }
         self.textures.clear();
         self.remote_images.clear();
-        #[cfg(feature = "servo")]
-        if let Some(servo) = &mut self.servo {
-            servo.load(u64::MAX, "");
-        }
     }
 
     fn open_url(&mut self, url: &str) {
@@ -988,11 +951,7 @@ impl RemailApp {
     /// Queues a notification. Events are handled before the frame has a
     /// `Context` to draw into, so toasts are buffered rather than shown here.
     fn toast(&mut self, title: &str, description: Option<String>, tone: BadgeTone) {
-        self.pending_toasts.push(PendingToast {
-            title: title.to_string(),
-            description,
-            tone,
-        });
+        self.pending_toasts.push(PendingToast { title: title.to_string(), description, tone });
     }
 }
 
@@ -1102,138 +1061,6 @@ fn unique_path(directory: &std::path::Path, filename: &str) -> std::path::PathBu
     candidate
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn list(uids: &[u32]) -> Vec<Envelope> {
-        in_mailbox("INBOX", uids)
-    }
-
-    fn in_mailbox(mailbox: &str, uids: &[u32]) -> Vec<Envelope> {
-        uids.iter()
-            .map(|uid| Envelope {
-                uid: *uid,
-                mailbox: mailbox.to_string(),
-                // Descending dates, matching the newest-first display order.
-                date: 1_000 - *uid as i64,
-                ..Default::default()
-            })
-            .collect()
-    }
-
-    fn uids(list: &[Envelope]) -> Vec<u32> {
-        list.iter().map(|e| e.uid).collect()
-    }
-
-    fn keys(mailbox: &str, uids: &[u32]) -> Vec<RowKey> {
-        uids.iter().map(|uid| RowKey::new(mailbox, *uid)).collect()
-    }
-
-    #[test]
-    fn rows_in_different_mailboxes_are_distinct() {
-        // The reason rows are not keyed by UID alone: a cross-folder search
-        // can put the same UID from two mailboxes in one list.
-        let mut rows = in_mailbox("INBOX", &[7]);
-        rows.extend(in_mailbox("Archive", &[7]));
-
-        let taken = take_rows(&mut rows, &keys("INBOX", &[7]));
-        assert_eq!(taken.len(), 1, "removed more than the requested row");
-        assert_eq!(taken[0].mailbox, "INBOX");
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].mailbox, "Archive", "removed the wrong folder's row");
-    }
-
-    #[test]
-    fn groups_rows_by_the_mailbox_they_live_in() {
-        let rows = vec![
-            RowKey::new("INBOX", 1),
-            RowKey::new("Archive", 5),
-            RowKey::new("INBOX", 2),
-        ];
-        let grouped = RemailApp::by_mailbox(&rows);
-        assert_eq!(grouped.len(), 2);
-        // Order follows first appearance, so the visible folder goes first.
-        assert_eq!(grouped[0], ("INBOX".to_string(), vec![1, 2]));
-        assert_eq!(grouped[1], ("Archive".to_string(), vec![5]));
-    }
-
-    #[test]
-    fn grouping_an_empty_selection_yields_nothing() {
-        assert!(RemailApp::by_mailbox(&[]).is_empty());
-    }
-
-    #[test]
-    fn prefers_the_message_id_as_a_remote_key() {
-        let mut envelope = Envelope { uid: 7, ..Default::default() };
-        envelope.message_id = "  <abc@example.com>  ".into();
-        assert_eq!(remote_key(&envelope, "INBOX"), "<abc@example.com>");
-    }
-
-    #[test]
-    fn falls_back_to_mailbox_and_uid_without_a_message_id() {
-        let envelope = Envelope { uid: 7, ..Default::default() };
-        assert_eq!(remote_key(&envelope, "INBOX"), "INBOX#7");
-    }
-
-    #[test]
-    fn takes_rows_out_in_one_pass() {
-        let mut rows = list(&[1, 2, 3, 4, 5]);
-        let taken = take_rows(&mut rows, &keys("INBOX", &[2, 4]));
-        assert_eq!(uids(&rows), vec![1, 3, 5]);
-        assert_eq!(uids(&taken), vec![2, 4]);
-    }
-
-    #[test]
-    fn taking_nothing_leaves_the_list_alone() {
-        let mut rows = list(&[1, 2, 3]);
-        assert!(take_rows(&mut rows, &keys("INBOX", &[99])).is_empty());
-        assert_eq!(uids(&rows), vec![1, 2, 3]);
-    }
-
-    #[test]
-    fn cursor_lands_where_the_first_removed_row_was() {
-        let rows = list(&[1, 2, 3, 4, 5]);
-        // Deleting the third row: the cursor should land on index 2, which
-        // after removal holds what was row 4.
-        assert_eq!(landing_index(&rows, &keys("INBOX", &[3])), 2);
-        // A multi-selection lands on the topmost removed row.
-        assert_eq!(landing_index(&rows, &keys("INBOX", &[4, 2])), 1);
-        // Deleting the first row lands at the top.
-        assert_eq!(landing_index(&rows, &keys("INBOX", &[1])), 0);
-    }
-
-    #[test]
-    fn landing_index_survives_rows_that_are_already_gone() {
-        let rows = list(&[1, 2, 3]);
-        assert_eq!(landing_index(&rows, &keys("INBOX", &[42])), 0);
-        assert_eq!(landing_index(&[], &keys("INBOX", &[1])), 0);
-    }
-
-    #[test]
-    fn restoring_puts_rows_back_in_date_order() {
-        // What `restore_rows` does: take the rows back, append, re-sort.
-        let mut rows = list(&[1, 2, 3, 4]);
-        let mut pending = take_rows(&mut rows, &keys("INBOX", &[2, 3]));
-        assert_eq!(uids(&rows), vec![1, 4]);
-
-        let restored = take_rows(&mut pending, &keys("INBOX", &[2, 3]));
-        rows.extend(restored);
-        rows.sort_by(|a, b| b.date.cmp(&a.date).then_with(|| b.uid.cmp(&a.uid)));
-
-        assert_eq!(uids(&rows), vec![1, 2, 3, 4], "rows did not return to place");
-        assert!(pending.is_empty());
-    }
-
-    #[test]
-    fn strips_paths_from_attachment_names() {
-        assert_eq!(sanitize_filename("../../etc/passwd"), "_.._etc_passwd");
-        assert_eq!(sanitize_filename("report.pdf"), "report.pdf");
-        assert_eq!(sanitize_filename("   "), "attachment");
-        assert_eq!(sanitize_filename(".bashrc"), "bashrc");
-    }
-}
-
 // -- frame ----------------------------------------------------------------
 
 impl eframe::App for RemailApp {
@@ -1245,9 +1072,6 @@ impl eframe::App for RemailApp {
         self.handle_shortcuts(ctx);
         self.tick_mark_read();
         self.flush_layout();
-
-        #[cfg(feature = "servo")]
-        self.update_servo(ctx);
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
@@ -1262,9 +1086,8 @@ impl eframe::App for RemailApp {
         let folders_fill = palette.depth_tint(palette.bg, 0.025);
         let messages_fill = palette.card;
         let reading_fill = palette.card;
-        let surface = |fill: egui::Color32, margin: i8| {
-            egui::Frame::new().fill(fill).inner_margin(margin)
-        };
+        let surface =
+            |fill: egui::Color32, margin: i8| egui::Frame::new().fill(fill).inner_margin(margin);
 
         let (folders_width, messages_width) = {
             let config = self.config.read().unwrap();
@@ -1329,16 +1152,13 @@ impl eframe::App for RemailApp {
             .size_range(180.0..=760.0)
             .frame(surface(messages_fill, 0))
             .show(ui, |ui| {
-                action = action
-                    .take()
-                    .or(self.message_list(ui, messages_font.clone(), messages_fill));
+                action =
+                    action.take().or(self.message_list(ui, messages_font.clone(), messages_fill));
             });
 
-        egui::CentralPanel::default()
-            .frame(surface(reading_fill, 8))
-            .show(ui, |ui| {
-                action = action.take().or(self.reader(ui, reading_font.clone()));
-            });
+        egui::CentralPanel::default().frame(surface(reading_fill, 8)).show(ui, |ui| {
+            action = action.take().or(self.reader(ui, reading_font.clone()));
+        });
 
         self.remember_panel_sizes(&ctx);
         self.dialogs(&ctx);
@@ -1410,10 +1230,10 @@ impl RemailApp {
         // Elegance sets its own text styles; scale the body style to the
         // configured size without disturbing the rest of the scale.
         ctx.all_styles_mut(|style| {
-            if let Some(font) = style.text_styles.get_mut(&egui::TextStyle::Body) {
-                if (font.size - font_size).abs() > f32::EPSILON {
-                    font.size = font_size;
-                }
+            if let Some(font) = style.text_styles.get_mut(&egui::TextStyle::Body)
+                && (font.size - font_size).abs() > f32::EPSILON
+            {
+                font.size = font_size;
             }
         });
     }
@@ -1434,11 +1254,7 @@ impl RemailApp {
                 action = Some(Action::Compose);
             }
             if ui
-                .add(
-                    Button::new(glyphs::REFRESH.to_string())
-                        .size(ButtonSize::Small)
-                        .outline(),
-                )
+                .add(Button::new(glyphs::REFRESH.to_string()).size(ButtonSize::Small).outline())
                 .on_hover_text("Sync this mailbox (F5)")
                 .clicked()
             {
@@ -1491,7 +1307,9 @@ impl RemailApp {
             // overlap rather than stack when the parent runs the other way.
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
-                    .add(Button::new(glyphs::SETTINGS.to_string()).size(ButtonSize::Small).outline())
+                    .add(
+                        Button::new(glyphs::SETTINGS.to_string()).size(ButtonSize::Small).outline(),
+                    )
                     .on_hover_text("Settings")
                     .clicked()
                 {
@@ -1544,20 +1362,13 @@ impl RemailApp {
             let mut include = self.config.read().unwrap().ui.search_spam_and_trash;
             // Filled when it is on, outlined when off: the state has to be
             // readable without hovering for a tooltip.
-            let mut button =
-                Button::new(glyphs::TRASH.to_string()).size(ButtonSize::Small);
-            button = if include {
-                button.accent(Accent::Blue)
+            let mut button = Button::new(glyphs::TRASH.to_string()).size(ButtonSize::Small);
+            button = if include { button.accent(Accent::Blue) } else { button.outline() };
+            let toggle = ui.add(button).on_hover_text(if include {
+                "Including Spam and Trash \u{2014} click to exclude them"
             } else {
-                button.outline()
-            };
-            let toggle = ui
-                .add(button)
-                .on_hover_text(if include {
-                    "Including Spam and Trash \u{2014} click to exclude them"
-                } else {
-                    "Excluding Spam and Trash \u{2014} click to include them"
-                });
+                "Excluding Spam and Trash \u{2014} click to include them"
+            });
             if toggle.clicked() {
                 include = !include;
                 self.config.write().unwrap().ui.search_spam_and_trash = include;
@@ -1668,9 +1479,6 @@ impl RemailApp {
     }
 
     fn reader(&mut self, ui: &mut egui::Ui, font: egui::FontId) -> Option<Action> {
-        // Resolved before the mutable borrow of `open_message` below.
-        let servo_active = self.servo_active();
-
         // Split the borrow: the reader needs the open message plus caches.
         let Some(open) = &mut self.open_message else {
             return reader::show(
@@ -1686,14 +1494,11 @@ impl RemailApp {
                     show_source: &mut false,
                     loading: false,
                     theme: &self.theme,
-                    servo_drawing: false,
                 },
             );
         };
 
-        let servo_drawing = servo_active && !open.show_source && open.prepared.is_some();
-
-        let action = reader::show(
+        reader::show(
             ui,
             reader::ReaderInput {
                 envelope: Some(&open.envelope),
@@ -1706,82 +1511,8 @@ impl RemailApp {
                 show_source: &mut open.show_source,
                 loading: open.body.is_none(),
                 theme: &self.theme,
-                servo_drawing,
             },
-        );
-
-        #[cfg(feature = "servo")]
-        if servo_drawing {
-            if let Some(servo) = &mut self.servo {
-                // Match the offscreen surface to the space left under the
-                // header, in physical pixels, so text is laid out at the
-                // width it will actually be shown at.
-                let scale = ui.ctx().pixels_per_point();
-                let available = ui.available_size();
-                servo.resize((
-                    (available.x * scale).max(1.0) as u32,
-                    (available.y * scale).max(1.0) as u32,
-                ));
-                servo.show(ui);
-            }
-        }
-
-        action
-    }
-
-    /// Whether the Servo backend is selected and running.
-    fn servo_active(&self) -> bool {
-        #[cfg(feature = "servo")]
-        {
-            self.config.read().unwrap().ui.html_backend == crate::config::HtmlBackend::Servo
-                && self.servo.is_some()
-        }
-        #[cfg(not(feature = "servo"))]
-        {
-            false
-        }
-    }
-
-    #[cfg(feature = "servo")]
-    fn update_servo(&mut self, ctx: &Context) {
-        let wanted = self.config.read().unwrap().ui.html_backend
-            == crate::config::HtmlBackend::Servo;
-        if !wanted || self.servo_failed {
-            return;
-        }
-
-        if self.servo.is_none() {
-            // Starting Servo is expensive, so it happens on first need rather
-            // than at launch.
-            match crate::html::servo::ServoView::new(ctx, (1024, 768)) {
-                Ok(view) => self.servo = Some(view),
-                Err(e) => {
-                    tracing::error!("could not start Servo: {e}");
-                    self.status = format!("Servo unavailable: {e}");
-                    self.servo_failed = true;
-                    self.config.write().unwrap().ui.html_backend =
-                        crate::config::HtmlBackend::Native;
-                    return;
-                }
-            }
-        }
-
-        let Some(servo) = &mut self.servo else { return };
-        let dark = self.theme.palette.is_dark;
-
-        if let Some(open) = &self.open_message {
-            if let Some(prepared) = &open.prepared {
-                let key = message_hash(&open.key, open.allow_remote);
-                servo.load(key, &crate::html::servo::document(&prepared.html, dark));
-            }
-        }
-        servo.update(ctx);
-
-        // Keep frames coming until the document settles, otherwise a page
-        // that finishes loading after the last input would never repaint.
-        if !servo.is_ready() {
-            ctx.request_repaint_after(std::time::Duration::from_millis(50));
-        }
+        )
     }
 
     /// Marks the open message `\Seen` once it has been on screen long enough
@@ -1886,10 +1617,9 @@ impl RemailApp {
             // the mailbox's own total is not what the list is displaying.
             let (rows, unread) = match &self.search_results {
                 Some(results) => (results, results.iter().filter(|e| e.flags.is_unread()).count()),
-                None => (
-                    &self.envelopes,
-                    self.envelopes.iter().filter(|e| e.flags.is_unread()).count(),
-                ),
+                None => {
+                    (&self.envelopes, self.envelopes.iter().filter(|e| e.flags.is_unread()).count())
+                }
             };
             let noun = if self.search_results.is_some() { "results" } else { "messages" };
             let counts = if unread > 0 {
@@ -1941,15 +1671,16 @@ impl RemailApp {
                         // Keep the draft in memory; closing the window should
                         // not silently destroy typing.
                         self.compose = None;
-                        Toast::new("Draft discarded")
-                            .tone(BadgeTone::Warning)
-                            .show(ctx);
+                        Toast::new("Draft discarded").tone(BadgeTone::Warning).show(ctx);
                     }
                 }
                 Some(ComposeAction::AttachFile) => self.attach_file(),
                 Some(ComposeAction::RemoveAttachment(index)) => {
-                    if index < compose.draft.attachments.len() {
-                        compose.draft.attachments.remove(index);
+                    // The index names a row drawn this frame; guard against a
+                    // draft that changed underneath rather than panicking.
+                    let attachments = &mut compose.draft.attachments;
+                    if index < attachments.len() {
+                        attachments.remove(index);
                     }
                 }
                 None => {}
@@ -1959,8 +1690,13 @@ impl RemailApp {
         // Accounts.
         if let Some(dialog) = &mut self.accounts_dialog {
             let config = self.config.read().unwrap().clone();
-            let found =
-                crate::ui::accounts::show(ctx, dialog, &config, self.keyring_available, &self.theme);
+            let found = crate::ui::accounts::show(
+                ctx,
+                dialog,
+                &config,
+                self.keyring_available,
+                &self.theme,
+            );
 
             // Apply the side effects the editor staged, now that the account
             // itself has been written to the config.
@@ -1995,7 +1731,10 @@ impl RemailApp {
                     }
                     FolderAction::Rename { account, from, to } => {
                         // The open mailbox is about to change name under us.
-                        if self.open_mailbox.as_ref().is_some_and(|(a, m)| *a == account && *m == from)
+                        if self
+                            .open_mailbox
+                            .as_ref()
+                            .is_some_and(|(a, m)| *a == account && *m == from)
                         {
                             self.open_mailbox = None;
                             self.envelopes.clear();
@@ -2025,7 +1764,6 @@ impl RemailApp {
         // Settings.
         if self.settings_open {
             let mut open = self.settings_open;
-            let servo_available = cfg!(feature = "servo");
             let changed = {
                 let mut config = self.config.write().unwrap();
                 crate::ui::accounts::settings(
@@ -2033,7 +1771,6 @@ impl RemailApp {
                     &mut open,
                     &mut config,
                     crate::ui::accounts::SettingsInput {
-                        servo_available,
                         trusted_senders: self.trusted_senders,
                         families: self.fonts.families(),
                         picker: &mut self.font_picker,
@@ -2055,8 +1792,8 @@ impl RemailApp {
                 {
                     let mut config = self.config.write().unwrap();
                     match config.account_mut(id) {
-                        Some(existing) => *existing = account,
-                        None => config.accounts.push(account),
+                        Some(existing) => *existing = *account,
+                        None => config.accounts.push(*account),
                     }
                 }
                 self.save_config();
@@ -2099,11 +1836,7 @@ impl RemailApp {
 
     fn count_trusted_senders(&self) -> u32 {
         let config = self.config.read().unwrap();
-        config
-            .accounts
-            .iter()
-            .filter_map(|a| self.store.remote_sender_count(a.id).ok())
-            .sum()
+        config.accounts.iter().filter_map(|a| self.store.remote_sender_count(a.id).ok()).sum()
     }
 
     fn save_config(&mut self) {
@@ -2154,19 +1887,6 @@ enum Nav {
     Act(Action),
 }
 
-/// A stable key for "which document is Servo showing", including the remote
-/// content decision, which changes the markup.
-#[cfg(feature = "servo")]
-fn message_hash(key: &MessageKey, allow_remote: bool) -> u64 {
-    use std::hash::{Hash, Hasher};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    key.account.hash(&mut hasher);
-    key.mailbox.hash(&mut hasher);
-    key.uid.hash(&mut hasher);
-    allow_remote.hash(&mut hasher);
-    hasher.finish()
-}
-
 /// Shells out to a desktop file picker. Avoids a GTK dependency for a feature
 /// used once in a while; returns `None` when no picker exists.
 fn pick_files() -> Option<Vec<std::path::PathBuf>> {
@@ -2192,4 +1912,133 @@ fn pick_files() -> Option<Vec<std::path::PathBuf>> {
         );
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn list(uids: &[u32]) -> Vec<Envelope> {
+        in_mailbox("INBOX", uids)
+    }
+
+    fn in_mailbox(mailbox: &str, uids: &[u32]) -> Vec<Envelope> {
+        uids.iter()
+            .map(|uid| Envelope {
+                uid: *uid,
+                mailbox: mailbox.to_string(),
+                // Descending dates, matching the newest-first display order.
+                date: 1_000 - *uid as i64,
+                ..Default::default()
+            })
+            .collect()
+    }
+
+    fn uids(list: &[Envelope]) -> Vec<u32> {
+        list.iter().map(|e| e.uid).collect()
+    }
+
+    fn keys(mailbox: &str, uids: &[u32]) -> Vec<RowKey> {
+        uids.iter().map(|uid| RowKey::new(mailbox, *uid)).collect()
+    }
+
+    #[test]
+    fn rows_in_different_mailboxes_are_distinct() {
+        // The reason rows are not keyed by UID alone: a cross-folder search
+        // can put the same UID from two mailboxes in one list.
+        let mut rows = in_mailbox("INBOX", &[7]);
+        rows.extend(in_mailbox("Archive", &[7]));
+
+        let taken = take_rows(&mut rows, &keys("INBOX", &[7]));
+        assert_eq!(taken.len(), 1, "removed more than the requested row");
+        assert_eq!(taken[0].mailbox, "INBOX");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].mailbox, "Archive", "removed the wrong folder's row");
+    }
+
+    #[test]
+    fn groups_rows_by_the_mailbox_they_live_in() {
+        let rows =
+            vec![RowKey::new("INBOX", 1), RowKey::new("Archive", 5), RowKey::new("INBOX", 2)];
+        let grouped = RemailApp::by_mailbox(&rows);
+        assert_eq!(grouped.len(), 2);
+        // Order follows first appearance, so the visible folder goes first.
+        assert_eq!(grouped[0], ("INBOX".to_string(), vec![1, 2]));
+        assert_eq!(grouped[1], ("Archive".to_string(), vec![5]));
+    }
+
+    #[test]
+    fn grouping_an_empty_selection_yields_nothing() {
+        assert!(RemailApp::by_mailbox(&[]).is_empty());
+    }
+
+    #[test]
+    fn prefers_the_message_id_as_a_remote_key() {
+        let mut envelope = Envelope { uid: 7, ..Default::default() };
+        envelope.message_id = "  <abc@example.com>  ".into();
+        assert_eq!(remote_key(&envelope, "INBOX"), "<abc@example.com>");
+    }
+
+    #[test]
+    fn falls_back_to_mailbox_and_uid_without_a_message_id() {
+        let envelope = Envelope { uid: 7, ..Default::default() };
+        assert_eq!(remote_key(&envelope, "INBOX"), "INBOX#7");
+    }
+
+    #[test]
+    fn takes_rows_out_in_one_pass() {
+        let mut rows = list(&[1, 2, 3, 4, 5]);
+        let taken = take_rows(&mut rows, &keys("INBOX", &[2, 4]));
+        assert_eq!(uids(&rows), vec![1, 3, 5]);
+        assert_eq!(uids(&taken), vec![2, 4]);
+    }
+
+    #[test]
+    fn taking_nothing_leaves_the_list_alone() {
+        let mut rows = list(&[1, 2, 3]);
+        assert!(take_rows(&mut rows, &keys("INBOX", &[99])).is_empty());
+        assert_eq!(uids(&rows), vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn cursor_lands_where_the_first_removed_row_was() {
+        let rows = list(&[1, 2, 3, 4, 5]);
+        // Deleting the third row: the cursor should land on index 2, which
+        // after removal holds what was row 4.
+        assert_eq!(landing_index(&rows, &keys("INBOX", &[3])), 2);
+        // A multi-selection lands on the topmost removed row.
+        assert_eq!(landing_index(&rows, &keys("INBOX", &[4, 2])), 1);
+        // Deleting the first row lands at the top.
+        assert_eq!(landing_index(&rows, &keys("INBOX", &[1])), 0);
+    }
+
+    #[test]
+    fn landing_index_survives_rows_that_are_already_gone() {
+        let rows = list(&[1, 2, 3]);
+        assert_eq!(landing_index(&rows, &keys("INBOX", &[42])), 0);
+        assert_eq!(landing_index(&[], &keys("INBOX", &[1])), 0);
+    }
+
+    #[test]
+    fn restoring_puts_rows_back_in_date_order() {
+        // What `restore_rows` does: take the rows back, append, re-sort.
+        let mut rows = list(&[1, 2, 3, 4]);
+        let mut pending = take_rows(&mut rows, &keys("INBOX", &[2, 3]));
+        assert_eq!(uids(&rows), vec![1, 4]);
+
+        let restored = take_rows(&mut pending, &keys("INBOX", &[2, 3]));
+        rows.extend(restored);
+        rows.sort_by(|a, b| b.date.cmp(&a.date).then_with(|| b.uid.cmp(&a.uid)));
+
+        assert_eq!(uids(&rows), vec![1, 2, 3, 4], "rows did not return to place");
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn strips_paths_from_attachment_names() {
+        assert_eq!(sanitize_filename("../../etc/passwd"), "_.._etc_passwd");
+        assert_eq!(sanitize_filename("report.pdf"), "report.pdf");
+        assert_eq!(sanitize_filename("   "), "attachment");
+        assert_eq!(sanitize_filename(".bashrc"), "bashrc");
+    }
 }

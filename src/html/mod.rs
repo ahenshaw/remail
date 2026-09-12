@@ -1,15 +1,8 @@
 //! HTML handling for message bodies: sanitize, parse, lay out, render.
 //!
-//! Two renderers sit behind the same prepared document:
-//!
-//! * [`native`] draws the block model directly with egui. It is the default
-//!   because it starts instantly, costs nothing when idle, and inherits the
-//!   application's theme and text selection.
-//! * [`servo`] (behind the `servo` feature) hands the sanitized markup to a
-//!   real web engine for messages that genuinely need CSS layout.
-//!
-//! Both consume output from [`sanitize`], so the security properties do not
-//! depend on which renderer is selected.
+//! [`native`] draws the block model directly with egui: it starts instantly,
+//! costs nothing when idle, and inherits the application's theme and text
+//! selection. Everything it draws has been through [`sanitize`] first.
 
 pub mod dom;
 pub mod layout;
@@ -17,15 +10,12 @@ pub mod native;
 pub mod print;
 pub mod sanitize;
 
-#[cfg(feature = "servo")]
-pub mod servo;
-
 pub use layout::{Block, Document, Inline, Style};
 
 /// A message body that has been cleaned and lowered, ready for either renderer.
 pub struct Prepared {
     pub document: Document,
-    /// The sanitized markup, kept for the Servo backend and "view source".
+    /// The sanitized markup, kept for "view source" and printing.
     pub html: String,
     /// Remote resources withheld from the document.
     pub blocked_remote: usize,
@@ -36,28 +26,20 @@ impl Prepared {
     /// carried, preferring HTML and falling back to plain text.
     ///
     /// Returns `None` only when the message has no body at all.
-    pub fn from_parts(
-        html: Option<&str>,
-        text: Option<&str>,
-        allow_remote: bool,
-    ) -> Option<Self> {
+    pub fn from_parts(html: Option<&str>, text: Option<&str>, allow_remote: bool) -> Option<Self> {
         // An HTML part that sanitizes down to nothing (all markup, no
         // content) is worse than the plain-text alternative, so fall through.
-        if let Some(html) = html.filter(|h| !h.trim().is_empty()) {
-            if let Some(prepared) = prepare_guarded(html, allow_remote) {
-                if !prepared.document.is_empty() {
-                    return Some(prepared);
-                }
-            }
+        if let Some(html) = html.filter(|h| !h.trim().is_empty())
+            && let Some(prepared) = prepare_guarded(html, allow_remote)
+            && !prepared.document.is_empty()
+        {
+            return Some(prepared);
         }
-        match text.filter(|t| !t.trim().is_empty()) {
-            Some(text) => Some(Prepared {
-                document: prepare_text(text),
-                html: String::new(),
-                blocked_remote: 0,
-            }),
-            None => None,
-        }
+        text.filter(|t| !t.trim().is_empty()).map(|text| Prepared {
+            document: prepare_text(text),
+            html: String::new(),
+            blocked_remote: 0,
+        })
     }
 }
 
@@ -97,10 +79,8 @@ pub fn prepare_text(text: &str) -> Document {
 
     let flush = |blocks: &mut Vec<Block>, paragraph: &mut Vec<Inline>, depth: u8| {
         if !paragraph.is_empty() {
-            blocks.push(Block::Paragraph {
-                inlines: std::mem::take(paragraph),
-                quote_depth: depth,
-            });
+            blocks
+                .push(Block::Paragraph { inlines: std::mem::take(paragraph), quote_depth: depth });
         }
     };
 
@@ -151,8 +131,7 @@ fn strip_quote_markers(line: &str) -> (u8, &str) {
 fn detect_url(line: &str) -> Option<String> {
     let trimmed = line.trim();
     let looks_like_url = trimmed.starts_with("http://") || trimmed.starts_with("https://");
-    (looks_like_url && !trimmed.contains(char::is_whitespace))
-        .then(|| trimmed.to_string())
+    (looks_like_url && !trimmed.contains(char::is_whitespace)).then(|| trimmed.to_string())
 }
 
 /// Extracts readable text from HTML, for previews and reply quoting.
@@ -214,16 +193,11 @@ mod tests {
         )
         .expect("opening the cache");
 
-        let mut statement = conn
-            .prepare("SELECT mailbox, uid, raw FROM body")
-            .expect("querying bodies");
+        let mut statement =
+            conn.prepare("SELECT mailbox, uid, raw FROM body").expect("querying bodies");
         let rows = statement
             .query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, i64>(1)?,
-                    row.get::<_, Vec<u8>>(2)?,
-                ))
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?, row.get::<_, Vec<u8>>(2)?))
             })
             .expect("reading bodies");
 

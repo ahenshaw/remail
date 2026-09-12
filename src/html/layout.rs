@@ -38,23 +38,49 @@ impl Default for Style {
 
 #[derive(Debug, Clone)]
 pub enum Inline {
-    Text { text: String, style: Style, link: Option<String> },
-    Image { src: String, alt: String, width: Option<u32>, height: Option<u32> },
+    Text {
+        text: String,
+        style: Style,
+        link: Option<String>,
+    },
+    Image {
+        src: String,
+        alt: String,
+        width: Option<u32>,
+        height: Option<u32>,
+    },
     /// An explicit `<br>`.
     Break,
 }
 
 #[derive(Debug, Clone)]
 pub enum Block {
-    Paragraph { inlines: Vec<Inline>, quote_depth: u8 },
-    Heading { level: u8, inlines: Vec<Inline> },
-    ListItem { depth: u8, marker: String, inlines: Vec<Inline>, quote_depth: u8 },
+    Paragraph {
+        inlines: Vec<Inline>,
+        quote_depth: u8,
+    },
+    Heading {
+        level: u8,
+        inlines: Vec<Inline>,
+    },
+    ListItem {
+        depth: u8,
+        marker: String,
+        inlines: Vec<Inline>,
+        quote_depth: u8,
+    },
     /// Preformatted text, rendered without reflowing.
-    Pre { text: String, quote_depth: u8 },
+    Pre {
+        text: String,
+        quote_depth: u8,
+    },
     Rule,
     /// Cells are themselves inline runs; nested tables are flattened into the
     /// cell that contains them.
-    Table { rows: Vec<Row>, quote_depth: u8 },
+    Table {
+        rows: Vec<Row>,
+        quote_depth: u8,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -134,17 +160,13 @@ impl Builder {
         // keeps galley counts low on heavily nested marketing HTML.
         if let Some(Inline::Text { text: previous, style: prev_style, link: prev_link }) =
             self.pending.last_mut()
+            && *prev_style == style
+            && prev_link.as_deref() == link
         {
-            if *prev_style == style && prev_link.as_deref() == link {
-                previous.push_str(&collapsed);
-                return;
-            }
+            previous.push_str(&collapsed);
+            return;
         }
-        self.pending.push(Inline::Text {
-            text: collapsed,
-            style,
-            link: link.map(str::to_string),
-        });
+        self.pending.push(Inline::Text { text: collapsed, style, link: link.map(str::to_string) });
     }
 
     fn walk_element(&mut self, element: &Element, style: Style, link: Option<&str>) {
@@ -168,8 +190,8 @@ impl Builder {
                 self.pending.push(Inline::Image {
                     src: src.to_string(),
                     alt: element.attr("alt").unwrap_or_default().to_string(),
-                    width: element.attr("width").and_then(|v| parse_dimension(v)),
-                    height: element.attr("height").and_then(|v| parse_dimension(v)),
+                    width: element.attr("width").and_then(parse_dimension),
+                    height: element.attr("height").and_then(parse_dimension),
                 });
             }
 
@@ -420,9 +442,7 @@ pub fn parse_color(value: &str) -> Option<[u8; 3]> {
         }
         return match hex.len() {
             3 => {
-                let digit = |i: usize| {
-                    u8::from_str_radix(&hex[i..i + 1], 16).ok().map(|v| v * 17)
-                };
+                let digit = |i: usize| u8::from_str_radix(&hex[i..i + 1], 16).ok().map(|v| v * 17);
                 Some([digit(0)?, digit(1)?, digit(2)?])
             }
             6 | 8 => {

@@ -17,11 +17,14 @@ use base64::engine::general_purpose::STANDARD;
 use crate::html::native::{ImageSource, TextureCache};
 use crate::mail::MessageBody;
 
+/// Image bytes by URL. `None` records a permanent failure, so a URL that
+/// cannot be fetched is not retried on every frame.
+type FetchedImages = HashMap<String, Option<Arc<Vec<u8>>>>;
+
 /// Fetches remote images in the background, caching results by URL.
 pub struct RemoteImages {
     runtime: tokio::runtime::Handle,
-    /// `None` records a permanent failure so it is not retried every frame.
-    results: Arc<Mutex<HashMap<String, Option<Arc<Vec<u8>>>>>>,
+    results: Arc<Mutex<FetchedImages>>,
     inflight: HashSet<String>,
     repaint: Arc<dyn Fn() + Send + Sync>,
 }

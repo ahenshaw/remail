@@ -66,112 +66,101 @@ pub fn show(ui: &mut Ui, input: SidebarInput<'_>) -> Option<Action> {
     // Rows are sized from the text, so tightening the font tightens the list.
     let row_height = (size * 1.5).round();
 
-    egui::ScrollArea::vertical()
-        .auto_shrink([false, false])
-        .show(ui, |ui| {
-            ui.spacing_mut().item_spacing.y = 1.0;
+    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+        ui.spacing_mut().item_spacing.y = 1.0;
 
-            for account in input.config.accounts.iter().filter(|a| a.enabled) {
-                let view = input.accounts.entry(account.id).or_default();
+        for account in input.config.accounts.iter().filter(|a| a.enabled) {
+            let view = input.accounts.entry(account.id).or_default();
 
-                match account_header(ui, account.short_name(), view, &font, row_height) {
-                    Some(AccountOutcome::Toggle) => view.expanded = !view.expanded,
-                    Some(AccountOutcome::NewFolder) => {
-                        action = Some(Action::NewSubfolder {
-                            account: account.id,
-                            // No parent: a folder at the top of the account.
-                            parent: String::new(),
-                        });
+            match account_header(ui, account.short_name(), view, &font, row_height) {
+                Some(AccountOutcome::Toggle) => view.expanded = !view.expanded,
+                Some(AccountOutcome::NewFolder) => {
+                    action = Some(Action::NewSubfolder {
+                        account: account.id,
+                        // No parent: a folder at the top of the account.
+                        parent: String::new(),
+                    });
+                }
+                None => {}
+            }
+
+            if view.needs_sign_in {
+                ui.horizontal(|ui| {
+                    ui.add_space(14.0);
+                    if ui
+                        .add(
+                            Button::new("Sign in with Google")
+                                .size(ButtonSize::Small)
+                                .accent(Accent::Blue),
+                        )
+                        .clicked()
+                    {
+                        action = Some(Action::SignIn(account.id));
                     }
-                    None => {}
-                }
+                });
+            } else if matches!(view.state, ConnectionState::Offline | ConnectionState::Failed) {
+                ui.horizontal(|ui| {
+                    ui.add_space(14.0);
+                    if ui.add(Button::new("Connect").size(ButtonSize::Small).outline()).clicked() {
+                        action = Some(Action::Connect(account.id));
+                    }
+                });
+            }
 
-                if view.needs_sign_in {
-                    ui.horizontal(|ui| {
-                        ui.add_space(14.0);
-                        if ui
-                            .add(
-                                Button::new("Sign in with Google")
-                                    .size(ButtonSize::Small)
-                                    .accent(Accent::Blue),
-                            )
-                            .clicked()
-                        {
-                            action = Some(Action::SignIn(account.id));
-                        }
-                    });
-                } else if matches!(
-                    view.state,
-                    ConnectionState::Offline | ConnectionState::Failed
-                ) {
-                    ui.horizontal(|ui| {
-                        ui.add_space(14.0);
-                        if ui
-                            .add(Button::new("Connect").size(ButtonSize::Small).outline())
-                            .clicked()
-                        {
-                            action = Some(Action::Connect(account.id));
-                        }
-                    });
-                }
+            if view.expanded {
+                // Indent against the mailboxes actually on screen, so the
+                // children of a hidden container are not left dangling.
+                let shown: HashSet<&str> = view
+                    .mailboxes
+                    .iter()
+                    .filter(|m| m.selectable)
+                    .map(|m| m.name.as_str())
+                    .collect();
 
-                if view.expanded {
-                    // Indent against the mailboxes actually on screen, so the
-                    // children of a hidden container are not left dangling.
-                    let shown: HashSet<&str> = view
+                for mailbox in view.mailboxes.iter().filter(|m| m.selectable) {
+                    // Hidden if anything above it is collapsed.
+                    let under_collapsed =
+                        mailbox.ancestors().iter().any(|path| view.collapsed.contains(*path));
+                    if under_collapsed {
+                        continue;
+                    }
+
+                    let selected =
+                        input.selected.is_some_and(|(a, m)| a == account.id && m == mailbox.name);
+                    let depth = mailbox.display_depth(|path| shown.contains(path));
+                    let has_children = view
                         .mailboxes
                         .iter()
-                        .filter(|m| m.selectable)
-                        .map(|m| m.name.as_str())
-                        .collect();
+                        .any(|other| other.ancestors().contains(&mailbox.name.as_str()));
 
-                    for mailbox in view.mailboxes.iter().filter(|m| m.selectable) {
-                        // Hidden if anything above it is collapsed.
-                        let under_collapsed = mailbox
-                            .ancestors()
-                            .iter()
-                            .any(|path| view.collapsed.contains(*path));
-                        if under_collapsed {
-                            continue;
-                        }
-
-                        let selected = input
-                            .selected
-                            .is_some_and(|(a, m)| a == account.id && m == mailbox.name);
-                        let depth = mailbox.display_depth(|path| shown.contains(path));
-                        let has_children = view
-                            .mailboxes
-                            .iter()
-                            .any(|other| other.ancestors().contains(&mailbox.name.as_str()));
-
-                        let row = mailbox_row(
-                            ui,
-                            RowInput {
-                                mailbox,
-                                depth,
-                                selected,
-                                has_children,
-                                collapsed: view.collapsed.contains(&mailbox.name),
-                                font: &font,
-                                row_height,
-                                palette: &input.theme.palette,
-                            },
-                        );
-                        if let Some(found) = row {
-                            action = Some(found.into_action(account.id, &mailbox.name));
-                        }
-                    }
-
-                    if view.mailboxes.is_empty() && view.state == ConnectionState::Online {
-                        ui.horizontal(|ui| {
-                            ui.add_space(14.0);
-                            ui.label(input.theme.faint_text("no mailboxes"));
-                        });
+                    let row = mailbox_row(
+                        ui,
+                        RowInput {
+                            mailbox,
+                            depth,
+                            selected,
+                            has_children,
+                            collapsed: view.collapsed.contains(&mailbox.name),
+                            font: &font,
+                            row_height,
+                            palette: &input.theme.palette,
+                        },
+                    );
+                    if let Some(found) = row {
+                        action = Some(found.into_action(account.id, &mailbox.name));
                     }
                 }
-                ui.add_space(4.0);
+
+                if view.mailboxes.is_empty() && view.state == ConnectionState::Online {
+                    ui.horizontal(|ui| {
+                        ui.add_space(14.0);
+                        ui.label(input.theme.faint_text("no mailboxes"));
+                    });
+                }
             }
-        });
+            ui.add_space(4.0);
+        }
+    });
 
     action
 }
@@ -215,31 +204,19 @@ fn account_header(
         view.expanded,
         visuals.weak_text_color(),
     );
-    painter.circle_filled(
-        pos2(rect.left() + 18.0, mark_centre),
-        3.0,
-        connection_color(view.state),
-    );
+    painter.circle_filled(pos2(rect.left() + 18.0, mark_centre), 3.0, connection_color(view.state));
 
     let left = rect.left() + 26.0;
-    let galley = painter.layout_no_wrap(
-        name.to_string(),
-        text_font,
-        visuals.strong_text_color(),
-    );
+    let galley = painter.layout_no_wrap(name.to_string(), text_font, visuals.strong_text_color());
     painter.galley(pos2(left, top), galley, visuals.strong_text_color());
 
-    let menu = elegance::ContextMenu::new(("account-menu", name)).show(&response, |ui| {
-        ui.add(elegance::MenuItem::new("New folder\u{2026}")).clicked()
-    });
+    let menu = elegance::ContextMenu::new(("account-menu", name))
+        .show(&response, |ui| ui.add(elegance::MenuItem::new("New folder\u{2026}")).clicked());
     if menu.unwrap_or(false) {
         return Some(AccountOutcome::NewFolder);
     }
 
-    response
-        .on_hover_text(state_label(view.state))
-        .clicked()
-        .then_some(AccountOutcome::Toggle)
+    response.on_hover_text(state_label(view.state)).clicked().then_some(AccountOutcome::Toggle)
 }
 
 /// What a mailbox row was asked to do.
@@ -305,11 +282,7 @@ fn mailbox_row(ui: &mut Ui, input: RowInput<'_>) -> Option<RowOutcome> {
 
     let unread = mailbox.unseen > 0;
     let accent = palette.blue;
-    let color = if selected || unread {
-        visuals.strong_text_color()
-    } else {
-        visuals.text_color()
-    };
+    let color = if selected || unread { visuals.strong_text_color() } else { visuals.text_color() };
 
     // Room for a disclosure arrow at every depth, so names line up whether or
     // not a folder has children.
@@ -368,51 +341,39 @@ fn mailbox_row(ui: &mut Ui, input: RowInput<'_>) -> Option<RowOutcome> {
 
     // A click on the arrow folds the subtree; anywhere else opens the folder.
     if response.clicked() {
-        let on_arrow = response
-            .interact_pointer_pos()
-            .is_some_and(|at| at.x < indent + arrow_width);
-        outcome = Some(if has_children && on_arrow {
-            RowOutcome::Toggle
-        } else {
-            RowOutcome::Open
-        });
+        let on_arrow =
+            response.interact_pointer_pos().is_some_and(|at| at.x < indent + arrow_width);
+        outcome =
+            Some(if has_children && on_arrow { RowOutcome::Toggle } else { RowOutcome::Open });
     }
 
-    let menu = elegance::ContextMenu::new(("folder-menu", &mailbox.name)).show(
-        &response,
-        |ui| {
-            let mut chosen = None;
-            if ui
-                .add(
-                    elegance::MenuItem::new("Mark all as read")
-                        .enabled(mailbox.unseen > 0),
-                )
-                .clicked()
-            {
-                chosen = Some(RowOutcome::MarkRead);
-            }
-            ui.separator();
-            if ui.add(elegance::MenuItem::new("New subfolder\u{2026}")).clicked() {
-                chosen = Some(RowOutcome::NewChild);
-            }
-            if ui.add(elegance::MenuItem::new("Rename\u{2026}")).clicked() {
-                chosen = Some(RowOutcome::Rename);
-            }
-            if ui
-                .add(
-                    elegance::MenuItem::new("Delete folder\u{2026}")
-                        .danger()
-                        // A well-known mailbox is part of how the account
-                        // works; removing it is not an ordinary edit.
-                        .enabled(mailbox.special == SpecialUse::Normal),
-                )
-                .clicked()
-            {
-                chosen = Some(RowOutcome::Delete);
-            }
-            chosen
-        },
-    );
+    let menu = elegance::ContextMenu::new(("folder-menu", &mailbox.name)).show(&response, |ui| {
+        let mut chosen = None;
+        if ui.add(elegance::MenuItem::new("Mark all as read").enabled(mailbox.unseen > 0)).clicked()
+        {
+            chosen = Some(RowOutcome::MarkRead);
+        }
+        ui.separator();
+        if ui.add(elegance::MenuItem::new("New subfolder\u{2026}")).clicked() {
+            chosen = Some(RowOutcome::NewChild);
+        }
+        if ui.add(elegance::MenuItem::new("Rename\u{2026}")).clicked() {
+            chosen = Some(RowOutcome::Rename);
+        }
+        if ui
+            .add(
+                elegance::MenuItem::new("Delete folder\u{2026}")
+                    .danger()
+                    // A well-known mailbox is part of how the account
+                    // works; removing it is not an ordinary edit.
+                    .enabled(mailbox.special == SpecialUse::Normal),
+            )
+            .clicked()
+        {
+            chosen = Some(RowOutcome::Delete);
+        }
+        chosen
+    });
     if let Some(chosen) = menu.flatten() {
         outcome = Some(chosen);
     }
@@ -447,8 +408,7 @@ impl TextMetrics {
     }
 
     fn measure(painter: &egui::Painter, font: &FontId) -> Self {
-        let galley =
-            painter.layout_no_wrap("X".to_string(), font.clone(), Color32::PLACEHOLDER);
+        let galley = painter.layout_no_wrap("X".to_string(), font.clone(), Color32::PLACEHOLDER);
         let baseline = galley
             .rows
             .first()
@@ -474,16 +434,14 @@ fn icon_color(special: SpecialUse, palette: &elegance::Palette) -> Color32 {
         SpecialUse::Inbox => palette.blue,
         SpecialUse::Sent => palette.green,
         SpecialUse::Junk => palette.red,
-        SpecialUse::Drafts => pick(
-            Color32::from_rgb(0xb5, 0x2d, 0x8f),
-            Color32::from_rgb(0xe2, 0x7d, 0xc6),
-        ),
+        SpecialUse::Drafts => {
+            pick(Color32::from_rgb(0xb5, 0x2d, 0x8f), Color32::from_rgb(0xe2, 0x7d, 0xc6))
+        }
         // Deliberately not coloured: deleted mail should not draw the eye.
         SpecialUse::Trash => palette.text_faint,
-        SpecialUse::Normal | SpecialUse::Archive | SpecialUse::All => pick(
-            Color32::from_rgb(0xc4, 0x92, 0x3d),
-            Color32::from_rgb(0xdc, 0xb9, 0x77),
-        ),
+        SpecialUse::Normal | SpecialUse::Archive | SpecialUse::All => {
+            pick(Color32::from_rgb(0xc4, 0x92, 0x3d), Color32::from_rgb(0xdc, 0xb9, 0x77))
+        }
     }
 }
 

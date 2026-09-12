@@ -1,0 +1,5 @@
+# The default heuristics break short calls, chains and struct literals across
+# several lines well before the line is full, which makes dense UI code much
+# taller than it needs to be. "Max" lets anything that fits on one line stay
+# on one line, and leaves `max_width` as the only wrapping rule.
+use_small_heuristics = "Max"

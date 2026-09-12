@@ -65,7 +65,9 @@ impl ImapConnection {
         let tcp = tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(addr))
             .await
             .with_context(|| format!("connecting to {}:{}", account.imap_host, account.imap_port))?
-            .with_context(|| format!("connecting to {}:{}", account.imap_host, account.imap_port))?;
+            .with_context(|| {
+                format!("connecting to {}:{}", account.imap_host, account.imap_port)
+            })?;
         // Mail is latency-bound on small commands, not throughput-bound.
         tcp.set_nodelay(true).ok();
 
@@ -142,9 +144,8 @@ impl ImapConnection {
         // A server that labels its own folders is authoritative. Guessing on
         // top of that promotes any user folder that happens to be called
         // "Sent Mail" into a second Sent folder.
-        let advertises_special_use = names
-            .iter()
-            .any(|name| name.attributes().iter().any(is_special_use_attribute));
+        let advertises_special_use =
+            names.iter().any(|name| name.attributes().iter().any(is_special_use_attribute));
 
         let mut boxes: Vec<MailboxInfo> = names.iter().map(mailbox_from_name).collect();
         classify(&mut boxes, advertises_special_use);
@@ -213,10 +214,7 @@ impl ImapConnection {
             .with_context(|| format!("fetching envelopes for {range}"))?;
 
         let mailbox = self.selected.clone().unwrap_or_default();
-        Ok(fetches
-            .iter()
-            .filter_map(|fetch| envelope_from_fetch(fetch, &mailbox))
-            .collect())
+        Ok(fetches.iter().filter_map(|fetch| envelope_from_fetch(fetch, &mailbox)).collect())
     }
 
     /// Whether the server implements Gmail's IMAP extensions.
@@ -235,10 +233,7 @@ impl ImapConnection {
             .await
             .with_context(|| format!("fetching flags for {range}"))?;
 
-        Ok(fetches
-            .iter()
-            .filter_map(|f| Some((f.uid?, flags_from_fetch(f))))
-            .collect())
+        Ok(fetches.iter().filter_map(|f| Some((f.uid?, flags_from_fetch(f)))).collect())
     }
 
     /// Fetches one complete message. `BODY.PEEK[]` so reading does not
@@ -323,10 +318,7 @@ impl ImapConnection {
     }
 
     pub async fn create_mailbox(&mut self, name: &str) -> Result<()> {
-        self.session
-            .create(name)
-            .await
-            .with_context(|| format!("creating {name}"))?;
+        self.session.create(name).await.with_context(|| format!("creating {name}"))?;
         // Servers vary on whether a new mailbox is subscribed; do it so the
         // folder shows up in clients that list subscriptions.
         let _ = self.session.subscribe(name).await;
@@ -339,10 +331,7 @@ impl ImapConnection {
             let _ = self.session.close().await;
             self.selected = None;
         }
-        self.session
-            .rename(from, to)
-            .await
-            .with_context(|| format!("renaming {from} to {to}"))?;
+        self.session.rename(from, to).await.with_context(|| format!("renaming {from} to {to}"))?;
         let _ = self.session.unsubscribe(from).await;
         let _ = self.session.subscribe(to).await;
         Ok(())
@@ -353,10 +342,7 @@ impl ImapConnection {
             let _ = self.session.close().await;
             self.selected = None;
         }
-        self.session
-            .delete(name)
-            .await
-            .with_context(|| format!("deleting {name}"))?;
+        self.session.delete(name).await.with_context(|| format!("deleting {name}"))?;
         let _ = self.session.unsubscribe(name).await;
         Ok(())
     }
@@ -364,11 +350,7 @@ impl ImapConnection {
     /// Joins a parent path and a new child name with the server's delimiter.
     pub fn child_path(parent: &str, delimiter: Option<&str>, name: &str) -> String {
         let delimiter = delimiter.filter(|d| !d.is_empty()).unwrap_or("/");
-        if parent.is_empty() {
-            name.to_string()
-        } else {
-            format!("{parent}{delimiter}{name}")
-        }
+        if parent.is_empty() { name.to_string() } else { format!("{parent}{delimiter}{name}") }
     }
 
     /// Appends a message to a mailbox, used to file sent mail.
@@ -472,10 +454,7 @@ async fn tls_wrap(tcp: TcpStream, host: &str) -> Result<Stream> {
     let connector = TlsConnector::from(tls_config());
     let server_name = rustls_pki_types::ServerName::try_from(host.to_string())
         .with_context(|| format!("invalid TLS server name {host}"))?;
-    connector
-        .connect(server_name, tcp)
-        .await
-        .with_context(|| format!("TLS handshake with {host}"))
+    connector.connect(server_name, tcp).await.with_context(|| format!("TLS handshake with {host}"))
 }
 
 /// One shared client config: building it parses the full root store, which is
@@ -485,13 +464,9 @@ fn tls_config() -> Arc<rustls::ClientConfig> {
     static CONFIG: OnceLock<Arc<rustls::ClientConfig>> = OnceLock::new();
     CONFIG
         .get_or_init(|| {
-            let roots = rustls::RootCertStore {
-                roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
-            };
+            let roots = rustls::RootCertStore { roots: webpki_roots::TLS_SERVER_ROOTS.to_vec() };
             Arc::new(
-                rustls::ClientConfig::builder()
-                    .with_root_certificates(roots)
-                    .with_no_client_auth(),
+                rustls::ClientConfig::builder().with_root_certificates(roots).with_no_client_auth(),
             )
         })
         .clone()
@@ -577,10 +552,10 @@ fn envelope_from_fetch(fetch: &Fetch, mailbox: &str) -> Option<Envelope> {
     if let Some(labels) = fetch.gmail_labels() {
         envelope.folder_hint = gmail_folder(labels.iter().map(|l| l.as_ref()));
     }
-    if envelope.date == 0 {
-        if let Some(internal) = fetch.internal_date() {
-            envelope.date = internal.timestamp();
-        }
+    if envelope.date == 0
+        && let Some(internal) = fetch.internal_date()
+    {
+        envelope.date = internal.timestamp();
     }
     Some(envelope)
 }
@@ -761,9 +736,8 @@ mod tests {
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
         )
         .unwrap();
-        let mut statement = conn
-            .prepare("SELECT name, delimiter, selectable FROM mailbox")
-            .unwrap();
+        let mut statement =
+            conn.prepare("SELECT name, delimiter, selectable FROM mailbox").unwrap();
         let mut boxes: Vec<MailboxInfo> = statement
             .query_map([], |row| {
                 let name: String = row.get(0)?;
@@ -860,8 +834,7 @@ mod tests {
             println!("account is not signed in");
             return;
         };
-        let mut connection =
-            ImapConnection::connect(account, &credential).await.expect("connect");
+        let mut connection = ImapConnection::connect(account, &credential).await.expect("connect");
 
         let mailboxes = connection.list_mailboxes().await.expect("list");
         let criteria = text_search(&term).expect("criteria");
@@ -897,10 +870,7 @@ mod tests {
             Ok(_) => panic!("bogus credentials must not authenticate"),
             Err(e) => e.to_string(),
         };
-        assert!(
-            text.contains("login failed"),
-            "expected an authentication failure, got: {text}"
-        );
+        assert!(text.contains("login failed"), "expected an authentication failure, got: {text}");
     }
 
     fn mailbox(name: &str, special: SpecialUse) -> MailboxInfo {
@@ -930,7 +900,8 @@ mod tests {
 
     #[test]
     fn guesses_only_when_the_server_says_nothing() {
-        let mut boxes = vec![mailbox("Sent", SpecialUse::Normal), mailbox("Trash", SpecialUse::Normal)];
+        let mut boxes =
+            vec![mailbox("Sent", SpecialUse::Normal), mailbox("Trash", SpecialUse::Normal)];
         classify(&mut boxes, false);
         assert_eq!(boxes[0].special, SpecialUse::Sent);
         assert_eq!(boxes[1].special, SpecialUse::Trash);

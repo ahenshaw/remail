@@ -145,17 +145,6 @@ impl PaneStyle {
     }
 }
 
-/// Which engine renders `text/html` message bodies.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum HtmlBackend {
-    /// Built-in layout engine that draws sanitized HTML directly with egui.
-    #[default]
-    Native,
-    /// Servo, rendered offscreen and blitted into the reader pane.
-    Servo,
-}
-
 /// An address this account may send as.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -283,11 +272,7 @@ impl AccountConfig {
 
     /// Full name for dialogs and notifications.
     pub fn title(&self) -> &str {
-        if self.label.trim().is_empty() {
-            &self.email
-        } else {
-            &self.label
-        }
+        if self.label.trim().is_empty() { &self.email } else { &self.label }
     }
 
     /// Every address this account can send as, the primary one first.
@@ -306,8 +291,7 @@ impl AccountConfig {
         }
         for alias in &self.aliases {
             let email = alias.email.trim();
-            if email.is_empty() || out.iter().any(|kept| kept.email.eq_ignore_ascii_case(email))
-            {
+            if email.is_empty() || out.iter().any(|kept| kept.email.eq_ignore_ascii_case(email)) {
                 continue;
             }
             out.push(Identity {
@@ -352,7 +336,6 @@ impl AccountConfig {
 #[serde(default)]
 pub struct UiSettings {
     pub theme: ThemeChoice,
-    pub html_backend: HtmlBackend,
     /// Fetch `<img src="http…">` referenced by messages. Off by default
     /// because remote images are the standard read-tracking beacon.
     pub load_remote_content: bool,
@@ -380,7 +363,6 @@ impl Default for UiSettings {
     fn default() -> Self {
         Self {
             theme: ThemeChoice::Slate,
-            html_backend: HtmlBackend::Native,
             load_remote_content: false,
             poll_interval_secs: 120,
             initial_sync_count: 500,
@@ -417,8 +399,8 @@ impl Config {
         if !path.exists() {
             return Ok(Self::default());
         }
-        let text = fs::read_to_string(&path)
-            .with_context(|| format!("reading {}", path.display()))?;
+        let text =
+            fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
         toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))
     }
 
@@ -479,10 +461,8 @@ mod tests {
     fn lists_the_primary_address_first() {
         let mut a = account("me@example.com", "");
         a.display_name = "Me".into();
-        a.aliases = vec![Identity {
-            email: "sales@example.com".into(),
-            display_name: "Sales".into(),
-        }];
+        a.aliases =
+            vec![Identity { email: "sales@example.com".into(), display_name: "Sales".into() }];
 
         let identities = a.identities();
         assert_eq!(identities.len(), 2);

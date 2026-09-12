@@ -22,10 +22,7 @@ pub struct Element {
 
 impl Element {
     pub fn attr(&self, name: &str) -> Option<&str> {
-        self.attrs
-            .iter()
-            .find(|(k, _)| k.eq_ignore_ascii_case(name))
-            .map(|(_, v)| v.as_str())
+        self.attrs.iter().find(|(k, _)| k.eq_ignore_ascii_case(name)).map(|(_, v)| v.as_str())
     }
 }
 
@@ -42,13 +39,12 @@ pub fn parse(html: &str) -> Vec<Node> {
     while position < bytes.len() {
         match bytes[position] {
             b'<' if html[position..].starts_with("<!--") => {
-                position = html[position..]
-                    .find("-->")
-                    .map(|i| position + i + 3)
-                    .unwrap_or(bytes.len());
+                position =
+                    html[position..].find("-->").map(|i| position + i + 3).unwrap_or(bytes.len());
             }
             b'<' if html[position..].starts_with("<!") => {
-                position = html[position..].find('>').map(|i| position + i + 1).unwrap_or(bytes.len());
+                position =
+                    html[position..].find('>').map(|i| position + i + 1).unwrap_or(bytes.len());
             }
             b'<' if html[position..].starts_with("</") => {
                 let end = html[position..].find('>').map(|i| position + i).unwrap_or(bytes.len());
@@ -85,7 +81,7 @@ pub fn parse(html: &str) -> Vec<Node> {
     roots
 }
 
-fn push_node(stack: &mut Vec<Element>, roots: &mut Vec<Node>, node: Node) {
+fn push_node(stack: &mut [Element], roots: &mut Vec<Node>, node: Node) {
     match stack.last_mut() {
         Some(parent) => parent.children.push(node),
         None => roots.push(node),
@@ -395,10 +391,7 @@ mod tests {
 
     #[test]
     fn parses_a_document_full_of_padding_without_panicking() {
-        let body = format!(
-            "<p>{}</p><p>real text</p>",
-            "&nbsp;\u{ad}\u{200c}\u{34f} ".repeat(50)
-        );
+        let body = format!("<p>{}</p><p>real text</p>", "&nbsp;\u{ad}\u{200c}\u{34f} ".repeat(50));
         let nodes = parse(&body);
         assert_eq!(nodes.len(), 2);
     }

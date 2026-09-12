@@ -86,8 +86,7 @@ pub fn show(ui: &mut Ui, input: ListInput<'_>) -> ListOutput {
         ui.add_space(32.0);
         ui.vertical_centered(|ui| {
             ui.label(
-                egui::RichText::new(input.empty_message)
-                    .color(ui.visuals().weak_text_color()),
+                egui::RichText::new(input.empty_message).color(ui.visuals().weak_text_color()),
             );
         });
         return ListOutput { action: None, visible: 0..0 };
@@ -96,10 +95,8 @@ pub fn show(ui: &mut Ui, input: ListInput<'_>) -> ListOutput {
     let metrics = RowMetrics::new(input.font.size, input.compact);
     let row_height = metrics.height;
 
-    let cursor_index = input
-        .cursor
-        .as_ref()
-        .and_then(|key| input.envelopes.iter().position(|e| &e.key() == key));
+    let cursor_index =
+        input.cursor.as_ref().and_then(|key| input.envelopes.iter().position(|e| &e.key() == key));
 
     let mut visible = 0..0;
     let scroll = egui::ScrollArea::vertical().auto_shrink([false, false]);
@@ -118,7 +115,11 @@ pub fn show(ui: &mut Ui, input: ListInput<'_>) -> ListOutput {
 
             if ui.is_rect_visible(rect) {
                 draw_row(
-                    ui, rect, envelope, index, is_cursor, is_selected, &response, &input,
+                    ui,
+                    rect,
+                    envelope,
+                    RowState { index, is_cursor, is_selected, response: &response },
+                    &input,
                     metrics,
                 );
             }
@@ -128,11 +129,7 @@ pub fn show(ui: &mut Ui, input: ListInput<'_>) -> ListOutput {
                 pos2(rect.right() - 30.0, rect.top() + metrics.sender_y - 2.0),
                 Vec2::splat(22.0),
             );
-            let star = ui.interact(
-                star_rect,
-                ui.id().with(("star", envelope.uid)),
-                Sense::click(),
-            );
+            let star = ui.interact(star_rect, ui.id().with(("star", envelope.uid)), Sense::click());
             if star.clicked() {
                 action = Some(Action::ToggleStar(key.clone()));
             } else if response.clicked() {
@@ -155,17 +152,24 @@ pub fn show(ui: &mut Ui, input: ListInput<'_>) -> ListOutput {
     ListOutput { action, visible }
 }
 
+/// Where a row sits in the list and how the pointer and selection see it.
+struct RowState<'a> {
+    /// Absolute index, so the stripe pattern does not shift while scrolling.
+    index: usize,
+    is_cursor: bool,
+    is_selected: bool,
+    response: &'a egui::Response,
+}
+
 fn draw_row(
     ui: &Ui,
     rect: Rect,
     envelope: &Envelope,
-    index: usize,
-    is_cursor: bool,
-    is_selected: bool,
-    response: &egui::Response,
+    state: RowState<'_>,
     input: &ListInput<'_>,
     metrics: RowMetrics,
 ) {
+    let RowState { index, is_cursor, is_selected, response } = state;
     let visuals = ui.visuals();
     let painter = ui.painter();
     let family = input.font.family.clone();
@@ -207,11 +211,8 @@ fn draw_row(
 
     // Subjects carry the accent. A read one recedes towards body text so the
     // colour still marks the column without shouting on every row.
-    let subject_color = if unread {
-        palette.blue
-    } else {
-        super::mix(palette.blue, palette.text_muted, 0.4)
-    };
+    let subject_color =
+        if unread { palette.blue } else { super::mix(palette.blue, palette.text_muted, 0.4) };
 
     let size = input.font.size;
     // A bar down the whole row, not a dot beside one line: at a glance the
@@ -232,11 +233,7 @@ fn draw_row(
     let date_width = if date.is_empty() {
         0.0
     } else {
-        let galley = painter.layout_no_wrap(
-            date.clone(),
-            font(size * 0.82),
-            weak,
-        );
+        let galley = painter.layout_no_wrap(date.clone(), font(size * 0.82), weak);
         let width = galley.size().x;
         painter.galley(
             pos2(right - width, rect.top() + metrics.sender_y + size * 0.1),
@@ -339,6 +336,21 @@ fn draw_row(
     );
 }
 
+/// Subject for a compact row, with the folder appended while searching.
+fn compact_subject(envelope: &Envelope, show_folder: bool) -> String {
+    let subject = display_subject(envelope);
+    let folder = envelope.folder_label();
+    if show_folder && !folder.is_empty() {
+        format!("{subject}  \u{2014} {folder}")
+    } else {
+        subject.to_string()
+    }
+}
+
+fn display_subject(envelope: &Envelope) -> &str {
+    if envelope.subject.trim().is_empty() { "(no subject)" } else { &envelope.subject }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -350,10 +362,7 @@ mod tests {
             assert!(m.sender_y > 0.0, "no padding above the first line");
             assert!(m.subject_y > m.sender_y + size, "sender and subject overlap");
             assert!(m.preview_y > m.subject_y + size, "subject and preview overlap");
-            assert!(
-                m.height >= m.preview_y + size,
-                "preview is clipped at size {size}"
-            );
+            assert!(m.height >= m.preview_y + size, "preview is clipped at size {size}");
         }
     }
 
@@ -370,24 +379,5 @@ mod tests {
         assert_eq!(m.sender_y, m.subject_y);
         assert!(m.height >= m.sender_y + 14.0);
         assert!(m.height < RowMetrics::new(14.0, false).height);
-    }
-}
-
-/// Subject for a compact row, with the folder appended while searching.
-fn compact_subject(envelope: &Envelope, show_folder: bool) -> String {
-    let subject = display_subject(envelope);
-    let folder = envelope.folder_label();
-    if show_folder && !folder.is_empty() {
-        format!("{subject}  \u{2014} {folder}")
-    } else {
-        subject.to_string()
-    }
-}
-
-fn display_subject(envelope: &Envelope) -> &str {
-    if envelope.subject.trim().is_empty() {
-        "(no subject)"
-    } else {
-        &envelope.subject
     }
 }

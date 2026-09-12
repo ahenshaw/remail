@@ -10,15 +10,15 @@ use elegance::{
 };
 
 use crate::config::{
-    AccountConfig, AccountId, AuthMethod, Config, Encryption, HtmlBackend, PaneFont, PaneStyle,
-    ThemeChoice,
+    AccountConfig, AccountId, AuthMethod, Config, Encryption, PaneFont, PaneStyle, ThemeChoice,
 };
 
 /// What the dialogs are asking the app to do.
 #[derive(Debug, Clone)]
 pub enum AccountsAction {
-    /// Persist the working copy of this account.
-    Save(AccountConfig),
+    /// Persist the working copy of this account. Boxed: an `AccountConfig`
+    /// dwarfs every other variant.
+    Save(Box<AccountConfig>),
     /// Run the interactive OAuth flow.
     SignIn(AccountId),
     SignOut(AccountId),
@@ -123,10 +123,7 @@ pub fn show(
                 )));
                 ui.add_space(12.0);
                 ui.horizontal(|ui| {
-                    if ui
-                        .add(Button::new("Remove").accent(Accent::Red))
-                        .clicked()
-                    {
+                    if ui.add(Button::new("Remove").accent(Accent::Red)).clicked() {
                         action = Some(AccountsAction::Remove(id));
                         dialog.confirm_remove = None;
                     }
@@ -163,14 +160,12 @@ fn list(
             ui.horizontal(|ui| {
                 ui.vertical(|ui| {
                     ui.label(RichText::new(account.title()).strong());
-                    ui.label(theme.faint_text(format!(
-                        "{}:{}",
-                        account.imap_host, account.imap_port
-                    )));
+                    ui.label(
+                        theme.faint_text(format!("{}:{}", account.imap_host, account.imap_port)),
+                    );
                 });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.add(Button::new("Edit").size(ButtonSize::Small).outline()).clicked()
-                    {
+                    if ui.add(Button::new("Edit").size(ButtonSize::Small).outline()).clicked() {
                         dialog.editing = Some(account.clone());
                         dialog.password.clear();
                     }
@@ -211,17 +206,11 @@ fn list(
 
     ui.add_space(6.0);
     ui.horizontal(|ui| {
-        if ui
-            .add(Button::new(format!("{} Gmail", glyphs::PLUS)).accent(Accent::Blue))
-            .clicked()
-        {
+        if ui.add(Button::new(format!("{} Gmail", glyphs::PLUS)).accent(Accent::Blue)).clicked() {
             dialog.editing = Some(AccountConfig::gmail(config.next_account_id(), ""));
             dialog.password.clear();
         }
-        if ui
-            .add(Button::new(format!("{} IMAP", glyphs::PLUS)).outline())
-            .clicked()
-        {
+        if ui.add(Button::new(format!("{} IMAP", glyphs::PLUS)).outline()).clicked() {
             dialog.editing = Some(AccountConfig::imap(config.next_account_id(), ""));
             dialog.password.clear();
         }
@@ -245,11 +234,7 @@ fn editor(
     egui::ScrollArea::vertical().max_height(420.0).auto_shrink([false, true]).show(ui, |ui| {
         ui.add(TextInput::new(&mut account.email).label("Email address").hint("you@example.com"));
         ui.add(TextInput::new(&mut account.display_name).label("Display name").hint("Your Name"));
-        ui.add(
-            TextInput::new(&mut account.label)
-                .label("Short name")
-                .hint("shown in the sidebar"),
-        );
+        ui.add(TextInput::new(&mut account.label).label("Short name").hint("shown in the sidebar"));
 
         ui.add_space(10.0);
         ui.label(theme.heading_text("Authentication"));
@@ -292,10 +277,7 @@ fn editor(
                     {
                         action = Some(AccountsAction::SignIn(account.id));
                     }
-                    if ui
-                        .add(Button::new("Sign out").size(ButtonSize::Small).outline())
-                        .clicked()
-                    {
+                    if ui.add(Button::new("Sign out").size(ButtonSize::Small).outline()).clicked() {
                         action = Some(AccountsAction::SignOut(account.id));
                     }
                 });
@@ -355,7 +337,11 @@ fn editor(
             account.aliases.remove(index);
         }
         if ui
-            .add(Button::new(format!("{} Add address", glyphs::PLUS)).size(ButtonSize::Small).outline())
+            .add(
+                Button::new(format!("{} Add address", glyphs::PLUS))
+                    .size(ButtonSize::Small)
+                    .outline(),
+            )
             .clicked()
         {
             account.aliases.push(crate::config::Identity::default());
@@ -383,16 +369,13 @@ fn editor(
     ui.add_space(12.0);
     ui.horizontal(|ui| {
         let valid = !account.email.trim().is_empty() && !account.imap_host.trim().is_empty();
-        if ui
-            .add(Button::new("Save").accent(Accent::Blue).enabled(valid))
-            .clicked()
-        {
+        if ui.add(Button::new("Save").accent(Accent::Blue).enabled(valid)).clicked() {
             if account.username.trim().is_empty() {
                 account.username = account.email.clone();
             }
             let id = account.id;
             let password = std::mem::take(&mut dialog.password);
-            action = Some(AccountsAction::Save(account.clone()));
+            action = Some(AccountsAction::Save(Box::new(account.clone())));
             dialog.editing = None;
 
             // The password is a separate, keyring-bound side effect; queue it
@@ -423,10 +406,7 @@ fn editor(
 
 fn port_field(ui: &mut Ui, label: &str, port: &mut u16) {
     let mut text = port.to_string();
-    if ui
-        .add(TextInput::new(&mut text).label(label).desired_width(80.0))
-        .changed()
-    {
+    if ui.add(TextInput::new(&mut text).label(label).desired_width(80.0)).changed() {
         // An empty or nonsense port keeps the previous value rather than
         // silently becoming zero.
         if let Ok(parsed) = text.trim().parse::<u16>() {
@@ -449,7 +429,6 @@ fn encryption_select(ui: &mut Ui, id: &str, encryption: &mut Encryption) {
 /// The settings dialog.
 /// Everything the settings dialog needs beyond the config itself.
 pub struct SettingsInput<'a> {
-    pub servo_available: bool,
     /// Senders trusted to load remote content, across all accounts.
     pub trusted_senders: u32,
     /// Font families installed on the system.
@@ -464,7 +443,7 @@ pub fn settings(
     config: &mut Config,
     input: SettingsInput<'_>,
 ) -> Option<AccountsAction> {
-    let SettingsInput { servo_available, trusted_senders, families, picker, theme } = input;
+    let SettingsInput { trusted_senders, families, picker, theme } = input;
     let mut action = None;
 
     Modal::new("settings-modal", open)
@@ -485,10 +464,7 @@ pub fn settings(
             );
             config.ui.theme = choice;
 
-            ui.add(
-                elegance::Slider::new(&mut config.ui.font_size, 11.0..=20.0)
-                    .label("Text size"),
-            );
+            ui.add(elegance::Slider::new(&mut config.ui.font_size, 11.0..=20.0).label("Text size"));
             ui.add(Switch::new(&mut config.ui.compact_list, "Compact message list"));
 
             ui.add_space(10.0);
@@ -524,25 +500,6 @@ pub fn settings(
 
             ui.add_space(12.0);
             ui.label(theme.heading_text("Reading"));
-
-            let mut backend = config.ui.html_backend;
-            ui.add(
-                Select::new("backend-select", &mut backend)
-                    .label("HTML renderer")
-                    .options([
-                        (HtmlBackend::Native, "Built-in"),
-                        (HtmlBackend::Servo, "Servo"),
-                    ])
-                    .width(180.0)
-                    .enabled(servo_available),
-            );
-            config.ui.html_backend = backend;
-
-            if !servo_available {
-                ui.label(theme.faint_text(
-                    "Servo backend not compiled in; rebuild with --features servo.",
-                ));
-            }
 
             ui.add(Switch::new(
                 &mut config.ui.load_remote_content,
@@ -588,9 +545,7 @@ pub fn settings(
                 elegance::Slider::new(&mut config.ui.poll_interval_secs, 30..=900)
                     .label("Poll interval (seconds)"),
             );
-            ui.label(theme.faint_text(
-                "Polling only applies to servers without IDLE support.",
-            ));
+            ui.label(theme.faint_text("Polling only applies to servers without IDLE support."));
 
             if forget_senders {
                 action = Some(AccountsAction::ForgetRemoteSenders);
@@ -600,15 +555,15 @@ pub fn settings(
         });
 
     // Drawn after the settings modal so it stacks above it.
-    if let Some(target) = picker.target {
-        if let Some(font) = font_picker(ctx, picker, families, theme) {
-            match target {
-                Pane::Folders => config.ui.folders.font = font,
-                Pane::Messages => config.ui.messages.font = font,
-                Pane::Reading => config.ui.reading.font = font,
-            }
-            action = Some(AccountsAction::SettingsChanged);
+    if let Some(target) = picker.target
+        && let Some(font) = font_picker(ctx, picker, families, theme)
+    {
+        match target {
+            Pane::Folders => config.ui.folders.font = font,
+            Pane::Messages => config.ui.messages.font = font,
+            Pane::Reading => config.ui.reading.font = font,
         }
+        action = Some(AccountsAction::SettingsChanged);
     }
 
     action
@@ -617,9 +572,21 @@ pub fn settings(
 /// A pending folder edit, shown as a modal.
 pub enum FolderEdit {
     /// Create a folder under this parent. An empty parent means top level.
-    New { account: AccountId, parent: String, delimiter: Option<String>, name: String },
-    Rename { account: AccountId, mailbox: String, name: String },
-    Delete { account: AccountId, mailbox: String },
+    New {
+        account: AccountId,
+        parent: String,
+        delimiter: Option<String>,
+        name: String,
+    },
+    Rename {
+        account: AccountId,
+        mailbox: String,
+        name: String,
+    },
+    Delete {
+        account: AccountId,
+        mailbox: String,
+    },
 }
 
 /// What the folder dialog decided.
@@ -798,12 +765,7 @@ fn pane_row(
         // A dropdown is unusable with thousands of families, so the name is a
         // button that opens a searchable list.
         if ui
-            .add(
-                Button::new(style.font.label())
-                    .size(ButtonSize::Small)
-                    .outline()
-                    .min_width(150.0),
-            )
+            .add(Button::new(style.font.label()).size(ButtonSize::Small).outline().min_width(150.0))
             .on_hover_text("Choose a font")
             .clicked()
         {
@@ -815,11 +777,7 @@ fn pane_row(
         // pins an override, which "Match base size" clears again.
         let mut size = style.size(base);
         if ui
-            .add(
-                elegance::Slider::new(&mut size, 9.0..=26.0)
-                    .decimals(0)
-                    .desired_width(120.0),
-            )
+            .add(elegance::Slider::new(&mut size, 9.0..=26.0).decimals(0).desired_width(120.0))
             .changed()
         {
             style.font_size = Some(size);
@@ -836,8 +794,7 @@ fn font_picker(
     families: &[String],
     theme: &Theme,
 ) -> Option<PaneFont> {
-    let Some(target) = picker.target else { return None };
-    let _ = target;
+    picker.target?;
 
     let mut chosen = None;
     let mut open = true;
@@ -901,7 +858,6 @@ fn font_picker(
 /// struct would be the wrong tool for "did the user change something".
 fn settings_equal(a: &crate::config::UiSettings, b: &crate::config::UiSettings) -> bool {
     a.theme == b.theme
-        && a.html_backend == b.html_backend
         && a.load_remote_content == b.load_remote_content
         && a.poll_interval_secs == b.poll_interval_secs
         && a.initial_sync_count == b.initial_sync_count

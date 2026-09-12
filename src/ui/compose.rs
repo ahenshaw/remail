@@ -127,9 +127,7 @@ fn body(
                 }
             }
             None => {
-                ui.label(
-                    RichText::new("no account selected").color(ui.visuals().error_fg_color),
-                );
+                ui.label(RichText::new("no account selected").color(ui.visuals().error_fg_color));
             }
         }
     });
@@ -144,10 +142,7 @@ fn body(
     if state.show_cc {
         recipient_field(ui, state, Field::Cc, "Cc", None, lookup, &keys);
         recipient_field(ui, state, Field::Bcc, "Bcc", None, lookup, &keys);
-    } else if ui
-        .add(Button::new("Add Cc / Bcc").size(ButtonSize::Small).outline())
-        .clicked()
-    {
+    } else if ui.add(Button::new("Add Cc / Bcc").size(ButtonSize::Small).outline()).clicked() {
         state.show_cc = true;
     }
 
@@ -180,11 +175,7 @@ fn body(
     // Size the editor to the space left after the action row, in whole lines.
     let line_height = ui.text_style_height(&egui::TextStyle::Body);
     let rows = (((ui.available_height() - 52.0) / line_height) as usize).max(6);
-    ui.add(
-        TextArea::new(&mut state.draft.body)
-            .rows(rows)
-            .hint("Write your message\u{2026}"),
-    );
+    ui.add(TextArea::new(&mut state.draft.body).rows(rows).hint("Write your message\u{2026}"));
 
     ui.add_space(8.0);
     ui.horizontal(|ui| {
@@ -200,10 +191,7 @@ fn body(
         {
             action = Some(ComposeAction::Send);
         }
-        if ui
-            .add(Button::new(format!("{} Attach", glyphs::PLUS)).outline())
-            .clicked()
-        {
+        if ui.add(Button::new(format!("{} Attach", glyphs::PLUS)).outline()).clicked() {
             action = Some(ComposeAction::AttachFile);
         }
 
@@ -289,11 +277,9 @@ fn recipient_field(
         };
         let (_, fragment) = current_token(&value);
         state.suggest = (fragment.len() >= 2)
-            .then(|| {
-                let matches = lookup(fragment);
-                (!matches.is_empty()).then(|| Suggest { field, matches, selected: 0 })
-            })
-            .flatten();
+            .then(|| lookup(fragment))
+            .filter(|matches| !matches.is_empty())
+            .map(|matches| Suggest { field, matches, selected: 0 });
     }
 
     let Some(suggest) = &mut state.suggest else { return };
@@ -308,8 +294,7 @@ fn recipient_field(
         suggest.selected = (suggest.selected + 1) % suggest.matches.len();
     }
     if keys.up {
-        suggest.selected =
-            (suggest.selected + suggest.matches.len() - 1) % suggest.matches.len();
+        suggest.selected = (suggest.selected + suggest.matches.len() - 1) % suggest.matches.len();
     }
 
     let mut chosen = keys.accept.then(|| suggest.matches[suggest.selected].clone());
@@ -358,9 +343,7 @@ fn recipient_field(
 fn move_caret_to_end(ui: &Ui, edit_id: egui::Id, length: usize) {
     let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), edit_id) else { return };
     let end = egui::text::CCursor::new(length);
-    state
-        .cursor
-        .set_char_range(Some(egui::text_selection::CCursorRange::one(end)));
+    state.cursor.set_char_range(Some(egui::text_selection::CCursorRange::one(end)));
     state.store(ui.ctx(), edit_id);
 }
 
@@ -369,10 +352,7 @@ fn move_caret_to_end(ui: &Ui, edit_id: egui::Id, length: usize) {
 /// Returns the byte offset it starts at, so a completion can replace exactly
 /// that and leave the addresses already entered alone.
 fn current_token(text: &str) -> (usize, &str) {
-    let start = text
-        .rfind([',', ';'])
-        .map(|at| at + 1)
-        .unwrap_or(0);
+    let start = text.rfind([',', ';']).map(|at| at + 1).unwrap_or(0);
     let fragment = &text[start..];
     let trimmed = fragment.trim_start();
     (start + (fragment.len() - trimmed.len()), trimmed)

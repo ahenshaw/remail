@@ -16,7 +16,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow, bail};
 use tokio::sync::{Notify, mpsc};
 
-use super::imap::{ImapConnection, IdleOutcome};
+use super::imap::{IdleOutcome, ImapConnection};
 use super::model::{Draft, Envelope, Flags, MailboxInfo, MessageBody, SearchScope, SpecialUse};
 use super::store::{MailboxState, Store};
 use super::{imap, parse, smtp};
@@ -55,22 +55,66 @@ pub enum Command {
     /// Count unread messages in every mailbox.
     CountUnread(AccountId),
     /// Mark everything in a mailbox as read.
-    MarkAllRead { account: AccountId, mailbox: String },
-    CreateMailbox { account: AccountId, name: String },
-    RenameMailbox { account: AccountId, from: String, to: String },
-    DeleteMailbox { account: AccountId, mailbox: String },
+    MarkAllRead {
+        account: AccountId,
+        mailbox: String,
+    },
+    CreateMailbox {
+        account: AccountId,
+        name: String,
+    },
+    RenameMailbox {
+        account: AccountId,
+        from: String,
+        to: String,
+    },
+    DeleteMailbox {
+        account: AccountId,
+        mailbox: String,
+    },
     /// Show a mailbox: emits cached contents, then syncs.
-    OpenMailbox { account: AccountId, mailbox: String },
-    Sync { account: AccountId, mailbox: String },
+    OpenMailbox {
+        account: AccountId,
+        mailbox: String,
+    },
+    Sync {
+        account: AccountId,
+        mailbox: String,
+    },
     /// Load one message body, from cache when possible.
-    FetchBody { account: AccountId, mailbox: String, uid: u32 },
+    FetchBody {
+        account: AccountId,
+        mailbox: String,
+        uid: u32,
+    },
     /// Warm the cache for messages the user is likely to open next.
-    Prefetch { account: AccountId, mailbox: String, uids: Vec<u32> },
-    SetFlag { account: AccountId, mailbox: String, uids: Vec<u32>, bit: u16, add: bool },
-    Move { account: AccountId, mailbox: String, uids: Vec<u32>, destination: String },
+    Prefetch {
+        account: AccountId,
+        mailbox: String,
+        uids: Vec<u32>,
+    },
+    SetFlag {
+        account: AccountId,
+        mailbox: String,
+        uids: Vec<u32>,
+        bit: u16,
+        add: bool,
+    },
+    Move {
+        account: AccountId,
+        mailbox: String,
+        uids: Vec<u32>,
+        destination: String,
+    },
     /// Move to Trash, or expunge outright if already there.
-    Delete { account: AccountId, mailbox: String, uids: Vec<u32> },
-    Send { draft: Draft },
+    Delete {
+        account: AccountId,
+        mailbox: String,
+        uids: Vec<u32>,
+    },
+    Send {
+        draft: Draft,
+    },
     Search {
         account: AccountId,
         mailbox: String,
@@ -96,12 +140,28 @@ pub enum ConnectionState {
 
 #[derive(Debug, Clone)]
 pub enum Event {
-    Status { account: AccountId, text: String },
-    Error { account: AccountId, text: String },
-    Connection { account: AccountId, state: ConnectionState },
-    Mailboxes { account: AccountId, mailboxes: Vec<MailboxInfo> },
+    Status {
+        account: AccountId,
+        text: String,
+    },
+    Error {
+        account: AccountId,
+        text: String,
+    },
+    Connection {
+        account: AccountId,
+        state: ConnectionState,
+    },
+    Mailboxes {
+        account: AccountId,
+        mailboxes: Vec<MailboxInfo>,
+    },
     /// How many unread messages a mailbox holds.
-    MailboxStats { account: AccountId, mailbox: String, unseen: u32 },
+    MailboxStats {
+        account: AccountId,
+        mailbox: String,
+        unseen: u32,
+    },
     /// Contents of a mailbox as of this moment. `from_cache` distinguishes the
     /// instant paint from the server-confirmed refresh.
     Listing {
@@ -111,22 +171,57 @@ pub enum Event {
         from_cache: bool,
     },
     /// Envelopes added or updated since the last listing.
-    Envelopes { account: AccountId, mailbox: String, envelopes: Vec<Envelope> },
+    Envelopes {
+        account: AccountId,
+        mailbox: String,
+        envelopes: Vec<Envelope>,
+    },
     /// Messages that no longer exist on the server.
-    Vanished { account: AccountId, mailbox: String, uids: Vec<u32> },
+    Vanished {
+        account: AccountId,
+        mailbox: String,
+        uids: Vec<u32>,
+    },
     /// A move or delete did not happen. The UI hides such rows optimistically,
     /// so it needs to be told to put them back.
-    RemovalFailed { account: AccountId, mailbox: String, uids: Vec<u32> },
-    FlagsChanged { account: AccountId, mailbox: String, changes: Vec<(u32, Flags)> },
-    Body { account: AccountId, mailbox: String, uid: u32, body: Arc<MessageBody> },
+    RemovalFailed {
+        account: AccountId,
+        mailbox: String,
+        uids: Vec<u32>,
+    },
+    FlagsChanged {
+        account: AccountId,
+        mailbox: String,
+        changes: Vec<(u32, Flags)>,
+    },
+    Body {
+        account: AccountId,
+        mailbox: String,
+        uid: u32,
+        body: Arc<MessageBody>,
+    },
     /// A preview line became available for a row already on screen.
-    Preview { account: AccountId, mailbox: String, uid: u32, preview: String, has_attachments: bool },
-    SearchResults { account: AccountId, mailbox: String, envelopes: Vec<Envelope> },
+    Preview {
+        account: AccountId,
+        mailbox: String,
+        uid: u32,
+        preview: String,
+        has_attachments: bool,
+    },
+    SearchResults {
+        account: AccountId,
+        mailbox: String,
+        envelopes: Vec<Envelope>,
+    },
     Sent,
     /// The account is configured for OAuth but has never been authorized, so
     /// the UI should offer sign-in rather than a generic retry.
-    NeedsSignIn { account: AccountId },
-    SignedIn { account: AccountId },
+    NeedsSignIn {
+        account: AccountId,
+    },
+    SignedIn {
+        account: AccountId,
+    },
 }
 
 /// Handle held by the UI.
@@ -259,10 +354,8 @@ impl Supervisor {
                     self.tokens.forget(account);
                     secrets::delete_all(account);
                     self.workers.remove(&account);
-                    self.events.emit(Event::Connection {
-                        account,
-                        state: ConnectionState::Offline,
-                    });
+                    self.events
+                        .emit(Event::Connection { account, state: ConnectionState::Offline });
                 }
 
                 other => {
@@ -285,10 +378,10 @@ impl Supervisor {
     }
 
     fn worker(&mut self, account: AccountId) -> mpsc::UnboundedSender<Command> {
-        if let Some(tx) = self.workers.get(&account) {
-            if !tx.is_closed() {
-                return tx.clone();
-            }
+        if let Some(tx) = self.workers.get(&account)
+            && !tx.is_closed()
+        {
+            return tx.clone();
         }
 
         let (tx, rx) = mpsc::unbounded_channel();
@@ -397,13 +490,12 @@ impl AccountWorker {
                 }
                 _ = poll.tick() => {
                     // Only poll when IDLE is not covering this mailbox.
-                    if !self.idle_running {
-                        if let Some(mailbox) = self.current_mailbox() {
-                            if let Err(e) = self.sync(&mailbox).await {
-                                self.events.error(self.account, &e);
-                                self.drop_connection();
-                            }
-                        }
+                    if !self.idle_running
+                        && let Some(mailbox) = self.current_mailbox()
+                        && let Err(e) = self.sync(&mailbox).await
+                    {
+                        self.events.error(self.account, &e);
+                        self.drop_connection();
                     }
                 }
             }
@@ -430,10 +522,8 @@ impl AccountWorker {
 
     fn drop_connection(&mut self) {
         if self.connection.take().is_some() {
-            self.events.emit(Event::Connection {
-                account: self.account,
-                state: ConnectionState::Failed,
-            });
+            self.events
+                .emit(Event::Connection { account: self.account, state: ConnectionState::Failed });
         }
     }
 
@@ -524,32 +614,32 @@ impl AccountWorker {
                 self.send(draft).await?;
             }
             // Handled by the supervisor, never routed to a worker.
-            Command::SignIn(_)
-            | Command::SignOut(_)
-            | Command::Shutdown => {}
+            Command::SignIn(_) | Command::SignOut(_) | Command::Shutdown => {}
         }
         Ok(())
     }
 
     /// Returns a live connection, dialling one if necessary.
     async fn connect(&mut self) -> Result<&mut ImapConnection> {
-        if self.connection.is_some() {
-            return Ok(self.connection.as_mut().unwrap());
+        if self.connection.is_none() {
+            let account = self.account_config()?;
+            self.events.emit(Event::Connection {
+                account: self.account,
+                state: ConnectionState::Connecting,
+            });
+            self.events
+                .status(self.account, format!("Connecting to {}\u{2026}", account.imap_host));
+
+            let credential = self.credential(&account).await?;
+            let connection = ImapConnection::connect(&account, &credential).await?;
+
+            self.events
+                .emit(Event::Connection { account: self.account, state: ConnectionState::Online });
+            self.events.status(self.account, "Connected");
+            self.connection = Some(connection);
         }
 
-        let account = self.account_config()?;
-        self.events
-            .emit(Event::Connection { account: self.account, state: ConnectionState::Connecting });
-        self.events.status(self.account, format!("Connecting to {}\u{2026}", account.imap_host));
-
-        let credential = self.credential(&account).await?;
-        let connection = ImapConnection::connect(&account, &credential).await?;
-
-        self.events
-            .emit(Event::Connection { account: self.account, state: ConnectionState::Online });
-        self.events.status(self.account, "Connected");
-        self.connection = Some(connection);
-        Ok(self.connection.as_mut().unwrap())
+        Ok(self.connection.as_mut().expect("just dialled"))
     }
 
     async fn credential(&self, account: &AccountConfig) -> Result<Credential> {
@@ -718,12 +808,9 @@ impl AccountWorker {
         let mailboxes = self.store.load_mailboxes(self.account).unwrap_or_default();
         let mut mined = 0usize;
         for mailbox in mailboxes.iter().filter(|mailbox| mailbox.selectable) {
-            let envelopes = self
-                .store
-                .load_envelopes(self.account, &mailbox.name, 20_000)
-                .unwrap_or_default();
-            let outgoing =
-                matches!(mailbox.special, SpecialUse::Sent | SpecialUse::Drafts);
+            let envelopes =
+                self.store.load_envelopes(self.account, &mailbox.name, 20_000).unwrap_or_default();
+            let outgoing = matches!(mailbox.special, SpecialUse::Sent | SpecialUse::Drafts);
             mined += envelopes.len();
             self.record_contacts(outgoing, &envelopes);
         }
@@ -845,13 +932,7 @@ impl AccountWorker {
         Ok(())
     }
 
-    async fn set_flag(
-        &mut self,
-        mailbox: &str,
-        uids: &[u32],
-        bit: u16,
-        add: bool,
-    ) -> Result<()> {
+    async fn set_flag(&mut self, mailbox: &str, uids: &[u32], bit: u16, add: bool) -> Result<()> {
         let account = self.account;
         let connection = self.connect().await?;
         if connection.selected_mailbox() != Some(mailbox) {
@@ -922,9 +1003,7 @@ impl AccountWorker {
             .map(|m| m.name);
 
         match trash {
-            Some(trash) if trash != mailbox => {
-                self.move_messages(mailbox, uids, &trash).await
-            }
+            Some(trash) if trash != mailbox => self.move_messages(mailbox, uids, &trash).await,
             _ => {
                 let account = self.account;
                 let connection = self.connect().await?;
@@ -1042,29 +1121,26 @@ impl AccountWorker {
             .iter()
             .flat_map(|list| super::parse::parse_address_list(list))
             .collect();
-        let _ = self
-            .store
-            .record_contacts(self.account, &recipients, contact_weight::SENT_TO);
+        let _ = self.store.record_contacts(self.account, &recipients, contact_weight::SENT_TO);
 
         self.events.emit(Event::Sent);
         self.events.status(self.account, "Message sent");
 
         // File a copy in Sent. Gmail does this server-side, so skip it there
         // to avoid a duplicate.
-        if !account.imap_host.contains("gmail.com") {
-            if let Some(sent_box) = self
+        if !account.imap_host.contains("gmail.com")
+            && let Some(sent_box) = self
                 .store
                 .load_mailboxes(self.account)?
                 .into_iter()
                 .find(|m| m.special == SpecialUse::Sent)
                 .map(|m| m.name)
-            {
-                let connection = self.connect().await?;
-                if let Err(e) = connection.append(&sent_box, &sent.raw, &["\\Seen"]).await {
-                    // The message did go out; a filing failure is not fatal.
-                    tracing::warn!("could not file sent message: {e}");
-                    self.events.status(self.account, "Sent, but could not file a copy");
-                }
+        {
+            let connection = self.connect().await?;
+            if let Err(e) = connection.append(&sent_box, &sent.raw, &["\\Seen"]).await {
+                // The message did go out; a filing failure is not fatal.
+                tracing::warn!("could not file sent message: {e}");
+                self.events.status(self.account, "Sent, but could not file a copy");
             }
         }
         Ok(())
@@ -1151,27 +1227,27 @@ fn search_targets(
     include_spam_and_trash: bool,
 ) -> Vec<String> {
     let selectable = |candidate: &&MailboxInfo| candidate.selectable;
-    let is_spam_or_trash = |candidate: &MailboxInfo| {
-        matches!(candidate.special, SpecialUse::Trash | SpecialUse::Junk)
-    };
+    let is_spam_or_trash =
+        |candidate: &MailboxInfo| matches!(candidate.special, SpecialUse::Trash | SpecialUse::Junk);
 
-    if scope == SearchScope::All {
-        if let Some(all) = mailboxes.iter().filter(selectable).find(|candidate| {
-            candidate.special == SpecialUse::All
-        }) {
-            let mut targets = vec![all.name.clone()];
-            if include_spam_and_trash {
-                targets.extend(
-                    mailboxes
-                        .iter()
-                        .filter(selectable)
-                        .filter(|candidate| is_spam_or_trash(candidate))
-                        .map(|candidate| candidate.name.clone()),
-                );
-            }
-            targets.dedup();
-            return targets;
+    if scope == SearchScope::All
+        && let Some(all) = mailboxes
+            .iter()
+            .filter(selectable)
+            .find(|candidate| candidate.special == SpecialUse::All)
+    {
+        let mut targets = vec![all.name.clone()];
+        if include_spam_and_trash {
+            targets.extend(
+                mailboxes
+                    .iter()
+                    .filter(selectable)
+                    .filter(|candidate| is_spam_or_trash(candidate))
+                    .map(|candidate| candidate.name.clone()),
+            );
         }
+        targets.dedup();
+        return targets;
     }
 
     let mut targets: Vec<String> = mailboxes
@@ -1181,9 +1257,7 @@ fn search_targets(
             // Without an All mailbox every folder is visited, so the two are
             // dropped here instead of skipped there.
             SearchScope::All => include_spam_and_trash || !is_spam_or_trash(candidate),
-            SearchScope::Subtree => {
-                candidate.name == mailbox || is_descendant(candidate, mailbox)
-            }
+            SearchScope::Subtree => candidate.name == mailbox || is_descendant(candidate, mailbox),
             SearchScope::Folder => candidate.name == mailbox,
         })
         .map(|candidate| candidate.name.clone())

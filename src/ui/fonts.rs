@@ -44,9 +44,7 @@ impl FontLibrary {
         // default because they are not actionable. Finding nothing at all is,
         // so say so once.
         if families.is_empty() {
-            tracing::warn!(
-                "no system fonts found; only the built-in faces will be offered"
-            );
+            tracing::warn!("no system fonts found; only the built-in faces will be offered");
         } else {
             tracing::debug!("found {} font families", families.len());
         }
@@ -117,23 +115,15 @@ impl FontLibrary {
         let Some(data) = self.face_data(name) else { return false };
 
         let key = format!("system:{name}");
-        self.definitions
-            .font_data
-            .insert(key.clone(), Arc::new(FontData::from_owned(data)));
+        self.definitions.font_data.insert(key.clone(), Arc::new(FontData::from_owned(data)));
 
         // Fall back to the built-in faces so glyphs the chosen family
         // lacks — emoji, most often — still render.
         let mut chain = vec![key];
         chain.extend(
-            self.definitions
-                .families
-                .get(&FontFamily::Proportional)
-                .cloned()
-                .unwrap_or_default(),
+            self.definitions.families.get(&FontFamily::Proportional).cloned().unwrap_or_default(),
         );
-        self.definitions
-            .families
-            .insert(FontFamily::Name(name.into()), chain);
+        self.definitions.families.insert(FontFamily::Name(name.into()), chain);
 
         // Re-rasterizes every glyph, which is why this is once per family.
         ctx.set_fonts(self.definitions.clone());
@@ -203,8 +193,7 @@ mod tests {
     fn system_scan_finds_families() {
         let library = FontLibrary::load();
         // A machine with no fonts at all is possible; only assert ordering.
-        let names: Vec<String> =
-            library.families().iter().map(|f| f.to_lowercase()).collect();
+        let names: Vec<String> = library.families().iter().map(|f| f.to_lowercase()).collect();
         assert!(names.windows(2).all(|pair| pair[0] <= pair[1]), "not sorted");
     }
 }

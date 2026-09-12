@@ -332,21 +332,15 @@ impl Store {
         Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
 
-    pub fn delete_envelopes(
-        &self,
-        account: AccountId,
-        mailbox: &str,
-        uids: &[u32],
-    ) -> Result<()> {
+    pub fn delete_envelopes(&self, account: AccountId, mailbox: &str, uids: &[u32]) -> Result<()> {
         if uids.is_empty() {
             return Ok(());
         }
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
         {
-            let mut del_env = tx.prepare(
-                "DELETE FROM envelope WHERE account = ?1 AND mailbox = ?2 AND uid = ?3",
-            )?;
+            let mut del_env = tx
+                .prepare("DELETE FROM envelope WHERE account = ?1 AND mailbox = ?2 AND uid = ?3")?;
             let mut del_body =
                 tx.prepare("DELETE FROM body WHERE account = ?1 AND mailbox = ?2 AND uid = ?3")?;
             for uid in uids {
@@ -557,13 +551,7 @@ impl Store {
 
     // -- bodies ------------------------------------------------------------
 
-    pub fn save_raw(
-        &self,
-        account: AccountId,
-        mailbox: &str,
-        uid: u32,
-        raw: &[u8],
-    ) -> Result<()> {
+    pub fn save_raw(&self, account: AccountId, mailbox: &str, uid: u32, raw: &[u8]) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "INSERT INTO body (account, mailbox, uid, fetched, raw) VALUES (?1,?2,?3,?4,?5)
@@ -574,12 +562,7 @@ impl Store {
         Ok(())
     }
 
-    pub fn load_raw(
-        &self,
-        account: AccountId,
-        mailbox: &str,
-        uid: u32,
-    ) -> Result<Option<Vec<u8>>> {
+    pub fn load_raw(&self, account: AccountId, mailbox: &str, uid: u32) -> Result<Option<Vec<u8>>> {
         let conn = self.conn.lock().unwrap();
         let row = conn
             .query_row(

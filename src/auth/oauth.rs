@@ -67,11 +67,7 @@ pub async fn authorize(creds: &ClientCredentials, login_hint: &str) -> Result<To
 
     let server = tiny_http::Server::http("127.0.0.1:0")
         .map_err(|e| anyhow!("could not open loopback listener: {e}"))?;
-    let port = server
-        .server_addr()
-        .to_ip()
-        .context("loopback listener has no IP address")?
-        .port();
+    let port = server.server_addr().to_ip().context("loopback listener has no IP address")?.port();
     let redirect_uri = format!("http://127.0.0.1:{port}");
 
     let url = format!(
@@ -195,9 +191,7 @@ struct ErrorResponse {
 }
 
 async fn post_token(params: &[(&str, &str)]) -> Result<TokenSet> {
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(30))
-        .build()?;
+    let client = reqwest::Client::builder().timeout(Duration::from_secs(30)).build()?;
     let response = client.post(TOKEN_ENDPOINT).form(params).send().await?;
     let status = response.status();
     let body = response.text().await?;
@@ -225,10 +219,7 @@ async fn post_token(params: &[(&str, &str)]) -> Result<TokenSet> {
 }
 
 fn now() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
 }
 
 fn enc(s: &str) -> String {
@@ -285,9 +276,11 @@ mod tests {
 
     #[test]
     fn treats_expiring_tokens_as_stale() {
-        let stale = TokenSet { access_token: "a".into(), refresh_token: None, expires_at: now() + 30 };
+        let stale =
+            TokenSet { access_token: "a".into(), refresh_token: None, expires_at: now() + 30 };
         assert!(!stale.is_fresh());
-        let good = TokenSet { access_token: "a".into(), refresh_token: None, expires_at: now() + 3600 };
+        let good =
+            TokenSet { access_token: "a".into(), refresh_token: None, expires_at: now() + 3600 };
         assert!(good.is_fresh());
     }
 }

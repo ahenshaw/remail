@@ -38,22 +38,20 @@ impl TokenStore {
     /// access token on the way if necessary.
     pub async fn credential(&self, account: &AccountConfig) -> Result<Credential> {
         match account.auth {
-            AuthMethod::Password => {
-                match secrets::get(SecretKind::Password, account.id)? {
-                    Some(password) => Ok(Credential::Password(password)),
-                    None => bail!("no password saved for {}", account.email),
-                }
-            }
+            AuthMethod::Password => match secrets::get(SecretKind::Password, account.id)? {
+                Some(password) => Ok(Credential::Password(password)),
+                None => bail!("no password saved for {}", account.email),
+            },
             AuthMethod::OAuth2 => Ok(Credential::Bearer(self.access_token(account).await?)),
         }
     }
 
     /// Returns a usable access token, refreshing if the cached one is stale.
     pub async fn access_token(&self, account: &AccountConfig) -> Result<String> {
-        if let Some(tokens) = self.cached.lock().unwrap().get(&account.id) {
-            if tokens.is_fresh() {
-                return Ok(tokens.access_token.clone());
-            }
+        if let Some(tokens) = self.cached.lock().unwrap().get(&account.id)
+            && tokens.is_fresh()
+        {
+            return Ok(tokens.access_token.clone());
         }
 
         let Some(refresh_token) = secrets::get(SecretKind::RefreshToken, account.id)? else {
@@ -78,10 +76,7 @@ impl TokenStore {
     /// Whether this account has completed the OAuth flow at least once.
     /// Configuring a client id is not the same as being authorized.
     pub fn is_signed_in(&self, account: AccountId) -> bool {
-        secrets::get(SecretKind::RefreshToken, account)
-            .ok()
-            .flatten()
-            .is_some()
+        secrets::get(SecretKind::RefreshToken, account).ok().flatten().is_some()
     }
 
     /// Drops cached state for an account, e.g. after sign-out.

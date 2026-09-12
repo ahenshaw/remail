@@ -60,16 +60,16 @@ pub fn parse_body(raw: &[u8]) -> MessageBody {
     // Some senders mark inline images as regular parts and reference them by
     // filename; expose those to the renderer as well.
     for part in msg.parts.iter() {
-        if let PartType::InlineBinary(bin) = &part.body {
-            if let Some(cid) = part.content_id().filter(|c| !c.is_empty()) {
-                let cid = cid.trim_matches(['<', '>']).to_string();
-                if !inline.iter().any(|i| i.content_id == cid) {
-                    inline.push(InlinePart {
-                        content_id: cid,
-                        mime: mime_of(part),
-                        data: bin.to_vec(),
-                    });
-                }
+        if let PartType::InlineBinary(bin) = &part.body
+            && let Some(cid) = part.content_id().filter(|c| !c.is_empty())
+        {
+            let cid = cid.trim_matches(['<', '>']).to_string();
+            if !inline.iter().any(|i| i.content_id == cid) {
+                inline.push(InlinePart {
+                    content_id: cid,
+                    mime: mime_of(part),
+                    data: bin.to_vec(),
+                });
             }
         }
     }
@@ -129,7 +129,9 @@ fn addrs(address: Option<&MpAddress<'_>>) -> Vec<Addr> {
 fn mime_of(part: &mail_parser::MessagePart<'_>) -> String {
     match part.content_type() {
         Some(ct) => match ct.subtype() {
-            Some(sub) => format!("{}/{}", ct.ctype().to_ascii_lowercase(), sub.to_ascii_lowercase()),
+            Some(sub) => {
+                format!("{}/{}", ct.ctype().to_ascii_lowercase(), sub.to_ascii_lowercase())
+            }
             None => ct.ctype().to_ascii_lowercase(),
         },
         None => "application/octet-stream".to_string(),

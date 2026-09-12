@@ -14,8 +14,8 @@
 
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Result of sanitizing a message body.
 pub struct Sanitized {
@@ -64,9 +64,10 @@ fn filter_attribute<'u>(
         // Image sources are the tracking vector; everything else that can
         // fetch has already been stripped with its tag.
         ("img", "src") => {
-            if value.starts_with("cid:") || value.starts_with("data:image/") {
-                Some(Cow::Borrowed(value))
-            } else if allow_remote {
+            // A part carried inside the message reveals nothing by being
+            // drawn; a remote one reports the open, so it waits for consent.
+            let embedded = value.starts_with("cid:") || value.starts_with("data:image/");
+            if embedded || allow_remote {
                 Some(Cow::Borrowed(value))
             } else {
                 blocked.fetch_add(1, Ordering::Relaxed);
@@ -81,11 +82,62 @@ fn filter_attribute<'u>(
 
 fn allowed_tags() -> HashSet<&'static str> {
     HashSet::from_iter([
-        "a", "abbr", "b", "blockquote", "br", "caption", "cite", "code", "col", "colgroup",
-        "dd", "del", "div", "dl", "dt", "em", "figcaption", "figure", "font", "h1", "h2", "h3",
-        "h4", "h5", "h6", "hr", "i", "img", "ins", "kbd", "li", "mark", "ol", "p", "pre", "q",
-        "s", "samp", "small", "span", "strike", "strong", "sub", "sup", "table", "tbody", "td",
-        "tfoot", "th", "thead", "tr", "tt", "u", "ul", "var", "wbr",
+        "a",
+        "abbr",
+        "b",
+        "blockquote",
+        "br",
+        "caption",
+        "cite",
+        "code",
+        "col",
+        "colgroup",
+        "dd",
+        "del",
+        "div",
+        "dl",
+        "dt",
+        "em",
+        "figcaption",
+        "figure",
+        "font",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "hr",
+        "i",
+        "img",
+        "ins",
+        "kbd",
+        "li",
+        "mark",
+        "ol",
+        "p",
+        "pre",
+        "q",
+        "s",
+        "samp",
+        "small",
+        "span",
+        "strike",
+        "strong",
+        "sub",
+        "sup",
+        "table",
+        "tbody",
+        "td",
+        "tfoot",
+        "th",
+        "thead",
+        "tr",
+        "tt",
+        "u",
+        "ul",
+        "var",
+        "wbr",
     ])
 }
 

@@ -22,11 +22,7 @@ pub struct Sent {
 }
 
 /// Builds and sends a draft.
-pub async fn send(
-    account: &AccountConfig,
-    credential: &Credential,
-    draft: &Draft,
-) -> Result<Sent> {
+pub async fn send(account: &AccountConfig, credential: &Credential, draft: &Draft) -> Result<Sent> {
     let message = build(account, draft)?;
     let raw = message.formatted();
 
@@ -98,9 +94,7 @@ pub fn build(account: &AccountConfig, draft: &Draft) -> Result<Message> {
         builder = builder.references(references.join(" "));
     }
 
-    let text = SinglePart::builder()
-        .header(ContentType::TEXT_PLAIN)
-        .body(draft.body.clone());
+    let text = SinglePart::builder().header(ContentType::TEXT_PLAIN).body(draft.body.clone());
 
     if draft.attachments.is_empty() {
         return builder.singlepart(text).context("building message");
@@ -114,8 +108,8 @@ pub fn build(account: &AccountConfig, draft: &Draft) -> Result<Message> {
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| "attachment".to_string());
-        let content_type = ContentType::parse(guess_mime(&filename))
-            .unwrap_or(ContentType::TEXT_PLAIN);
+        let content_type =
+            ContentType::parse(guess_mime(&filename)).unwrap_or(ContentType::TEXT_PLAIN);
         multipart = multipart.singlepart(Attachment::new(filename).body(data, content_type));
     }
 
@@ -132,10 +126,7 @@ fn mailbox(name: &str, email: &str) -> Result<Mailbox> {
 }
 
 fn mailboxes(list: &str) -> Result<Vec<Mailbox>> {
-    parse_address_list(list)
-        .into_iter()
-        .map(|a| mailbox(&a.name, &a.email))
-        .collect()
+    parse_address_list(list).into_iter().map(|a| mailbox(&a.name, &a.email)).collect()
 }
 
 /// Minimal extension-to-type map. Anything unknown is sent as an opaque
@@ -176,10 +167,7 @@ pub fn reply_draft(
         let when = crate::ui::format_date_long(envelope.date);
         format!("On {when}, {who} wrote:")
     };
-    let quoted: String = quoted_source
-        .lines()
-        .map(|line| format!("> {line}\n"))
-        .collect();
+    let quoted: String = quoted_source.lines().map(|line| format!("> {line}\n")).collect();
 
     // Reply from whichever of the account's addresses this was sent to, so a
     // message to an alias is answered by that alias rather than silently
@@ -190,9 +178,7 @@ pub fn reply_draft(
         .iter()
         .chain(envelope.cc.iter())
         .find_map(|address| {
-            identities
-                .iter()
-                .find(|identity| identity.email.eq_ignore_ascii_case(&address.email))
+            identities.iter().find(|identity| identity.email.eq_ignore_ascii_case(&address.email))
         })
         .cloned()
         .unwrap_or_default();
@@ -200,9 +186,7 @@ pub fn reply_draft(
     // Every address of ours is dropped from Cc, not just the one replying,
     // or replying to all would copy the account back to itself.
     let is_self = |address: &&crate::mail::Addr| {
-        identities
-            .iter()
-            .any(|identity| identity.email.eq_ignore_ascii_case(&address.email))
+        identities.iter().any(|identity| identity.email.eq_ignore_ascii_case(&address.email))
     };
 
     let to = envelope.from.iter().map(|a| a.full()).collect::<Vec<_>>().join(", ");
@@ -345,14 +329,8 @@ mod tests {
         }];
 
         let envelope = crate::mail::Envelope {
-            from: vec![crate::mail::Addr {
-                name: "Ada".into(),
-                email: "ada@example.org".into(),
-            }],
-            to: vec![crate::mail::Addr {
-                name: String::new(),
-                email: "Sales@Example.com".into(),
-            }],
+            from: vec![crate::mail::Addr { name: "Ada".into(), email: "ada@example.org".into() }],
+            to: vec![crate::mail::Addr { name: String::new(), email: "Sales@Example.com".into() }],
             ..Default::default()
         };
         let body = crate::mail::MessageBody::default();
@@ -367,18 +345,11 @@ mod tests {
     #[test]
     fn a_reply_to_an_unknown_address_uses_the_primary_one() {
         let envelope = crate::mail::Envelope {
-            from: vec![crate::mail::Addr {
-                name: String::new(),
-                email: "ada@example.org".into(),
-            }],
-            to: vec![crate::mail::Addr {
-                name: String::new(),
-                email: "list@example.net".into(),
-            }],
+            from: vec![crate::mail::Addr { name: String::new(), email: "ada@example.org".into() }],
+            to: vec![crate::mail::Addr { name: String::new(), email: "list@example.net".into() }],
             ..Default::default()
         };
-        let draft =
-            reply_draft(&account(), &envelope, &crate::mail::MessageBody::default(), false);
+        let draft = reply_draft(&account(), &envelope, &crate::mail::MessageBody::default(), false);
         // Empty means "the account's primary address".
         assert!(draft.from.is_empty());
     }

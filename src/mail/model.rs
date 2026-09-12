@@ -326,9 +326,7 @@ pub struct Draft {
 
 impl Draft {
     pub fn is_empty(&self) -> bool {
-        self.to.trim().is_empty()
-            && self.subject.trim().is_empty()
-            && self.body.trim().is_empty()
+        self.to.trim().is_empty() && self.subject.trim().is_empty() && self.body.trim().is_empty()
     }
 }
 

@@ -23,7 +23,10 @@ use crate::mail::RowKey;
 #[derive(Debug, Clone)]
 pub enum Action {
     /// Show a mailbox.
-    OpenMailbox { account: AccountId, mailbox: String },
+    OpenMailbox {
+        account: AccountId,
+        mailbox: String,
+    },
     /// Bring an account online.
     Connect(AccountId),
     /// Start the interactive OAuth flow.
@@ -39,7 +42,9 @@ pub enum Action {
     ToggleRead,
     Archive,
     Delete,
-    Reply { all: bool },
+    Reply {
+        all: bool,
+    },
     Forward,
     Compose,
     /// Re-sync the open mailbox.
@@ -60,15 +65,30 @@ pub enum Action {
     /// Discard the current listing's search filter.
     ClearSearch,
     /// Mark every message in a mailbox as read.
-    MarkFolderRead { account: AccountId, mailbox: String },
+    MarkFolderRead {
+        account: AccountId,
+        mailbox: String,
+    },
     /// Open the dialog for a new folder under this parent.
-    NewSubfolder { account: AccountId, parent: String },
+    NewSubfolder {
+        account: AccountId,
+        parent: String,
+    },
     /// Open the dialog to rename this folder.
-    RenameFolder { account: AccountId, mailbox: String },
+    RenameFolder {
+        account: AccountId,
+        mailbox: String,
+    },
     /// Ask to delete this folder.
-    DeleteFolder { account: AccountId, mailbox: String },
+    DeleteFolder {
+        account: AccountId,
+        mailbox: String,
+    },
     /// Show or hide a folder's children.
-    ToggleFolder { account: AccountId, mailbox: String },
+    ToggleFolder {
+        account: AccountId,
+        mailbox: String,
+    },
 }
 
 use chrono::{DateTime, Datelike, Local, TimeZone, Utc};
@@ -115,11 +135,70 @@ pub fn format_size(bytes: usize) -> String {
         value /= 1024.0;
         unit += 1;
     }
-    if unit == 0 {
-        format!("{bytes} B")
-    } else {
-        format!("{value:.1} {}", UNITS[unit])
+    if unit == 0 { format!("{bytes} B") } else { format!("{value:.1} {}", UNITS[unit]) }
+}
+
+/// Draws one line of text, truncating with an ellipsis at `max_width`.
+///
+/// Shared by the panes that paint their own rows, so folder names and subject
+/// lines shorten the same way when a pane is narrow. Returns whether the text
+/// had to be shortened, which callers use to decide if a tooltip would tell
+/// the reader anything they cannot already see.
+pub fn paint_truncated(
+    painter: &egui::Painter,
+    position: egui::Pos2,
+    max_width: f32,
+    text: &str,
+    font: FontId,
+    color: Color32,
+) -> bool {
+    if text.is_empty() || max_width <= 8.0 {
+        return false;
     }
+    let mut galley = painter.layout_no_wrap(text.to_string(), font.clone(), color);
+    let mut truncated = false;
+
+    if galley.size().x > max_width {
+        truncated = true;
+        // Binary search the longest prefix that fits, on character
+        // boundaries so multi-byte text never splits mid-character.
+        let chars: Vec<char> = text.chars().collect();
+        let mut low = 0usize;
+        let mut high = chars.len();
+        while low < high {
+            let mid = (low + high).div_ceil(2);
+            let candidate: String = chars[..mid].iter().collect::<String>() + "\u{2026}";
+            let width = painter.layout_no_wrap(candidate, font.clone(), color).size().x;
+            if width <= max_width {
+                low = mid;
+            } else {
+                high = mid - 1;
+            }
+        }
+        let shortened: String = chars[..low].iter().collect::<String>() + "\u{2026}";
+        galley = painter.layout_no_wrap(shortened, font, color);
+    }
+    painter.galley(position, galley, color);
+    truncated
+}
+
+/// A selection or hover tint drawn from the theme's accent.
+///
+/// `subtlety` runs from 0 (the accent at full strength) to 1 (invisible
+/// against the surface). Mixing towards the card colour rather than
+/// brightening or darkening keeps the result readable on light and dark
+/// themes alike, where a fixed adjustment would go the wrong way on one.
+pub fn accent_tint(palette: &elegance::Palette, subtlety: f32) -> Color32 {
+    mix(palette.blue, palette.card, subtlety)
+}
+
+/// Blends two colours in linear space. Used to recede an accent colour
+/// towards the body text colour without depending on the theme's polarity,
+/// which `gamma_multiply` alone cannot do.
+pub fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
+    let t = t.clamp(0.0, 1.0);
+    let blend = |x: u8, y: u8| (x as f32 * (1.0 - t) + y as f32 * t).round() as u8;
+    Color32::from_rgb(blend(a.r(), b.r()), blend(a.g(), b.g()), blend(a.b(), b.b()))
 }
 
 #[cfg(test)]
@@ -162,71 +241,4 @@ mod tests {
         assert_eq!(format_date_short(0), "");
         assert_eq!(format_date_long(0), "unknown date");
     }
-}
-
-/// Draws one line of text, truncating with an ellipsis at `max_width`.
-///
-/// Shared by the panes that paint their own rows, so folder names and subject
-/// lines shorten the same way when a pane is narrow. Returns whether the text
-/// had to be shortened, which callers use to decide if a tooltip would tell
-/// the reader anything they cannot already see.
-pub fn paint_truncated(
-    painter: &egui::Painter,
-    position: egui::Pos2,
-    max_width: f32,
-    text: &str,
-    font: FontId,
-    color: Color32,
-) -> bool {
-    if text.is_empty() || max_width <= 8.0 {
-        return false;
-    }
-    let mut galley = painter.layout_no_wrap(text.to_string(), font.clone(), color);
-    let mut truncated = false;
-
-    if galley.size().x > max_width {
-        truncated = true;
-        // Binary search the longest prefix that fits, on character
-        // boundaries so multi-byte text never splits mid-character.
-        let chars: Vec<char> = text.chars().collect();
-        let mut low = 0usize;
-        let mut high = chars.len();
-        while low < high {
-            let mid = (low + high + 1) / 2;
-            let candidate: String = chars[..mid].iter().collect::<String>() + "\u{2026}";
-            let width = painter.layout_no_wrap(candidate, font.clone(), color).size().x;
-            if width <= max_width {
-                low = mid;
-            } else {
-                high = mid - 1;
-            }
-        }
-        let shortened: String = chars[..low].iter().collect::<String>() + "\u{2026}";
-        galley = painter.layout_no_wrap(shortened, font, color);
-    }
-    painter.galley(position, galley, color);
-    truncated
-}
-
-/// A selection or hover tint drawn from the theme's accent.
-///
-/// `subtlety` runs from 0 (the accent at full strength) to 1 (invisible
-/// against the surface). Mixing towards the card colour rather than
-/// brightening or darkening keeps the result readable on light and dark
-/// themes alike, where a fixed adjustment would go the wrong way on one.
-pub fn accent_tint(palette: &elegance::Palette, subtlety: f32) -> Color32 {
-    mix(palette.blue, palette.card, subtlety)
-}
-
-/// Blends two colours in linear space. Used to recede an accent colour
-/// towards the body text colour without depending on the theme's polarity,
-/// which `gamma_multiply` alone cannot do.
-pub fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
-    let t = t.clamp(0.0, 1.0);
-    let blend = |x: u8, y: u8| (x as f32 * (1.0 - t) + y as f32 * t).round() as u8;
-    Color32::from_rgb(
-        blend(a.r(), b.r()),
-        blend(a.g(), b.g()),
-        blend(a.b(), b.b()),
-    )
 }

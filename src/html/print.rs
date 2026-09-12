@@ -83,11 +83,8 @@ fn inline_images(html: &str, body: &MessageBody) -> String {
 
         match body.inline.iter().find(|part| part.content_id == reference) {
             Some(part) => {
-                let mime = if part.mime.is_empty() {
-                    "application/octet-stream"
-                } else {
-                    &part.mime
-                };
+                let mime =
+                    if part.mime.is_empty() { "application/octet-stream" } else { &part.mime };
                 out.push_str("data:");
                 out.push_str(mime);
                 out.push_str(";base64,");
@@ -116,11 +113,7 @@ fn field(out: &mut String, label: &str, value: &str) {
 }
 
 fn subject(envelope: &Envelope) -> &str {
-    if envelope.subject.trim().is_empty() {
-        "(no subject)"
-    } else {
-        &envelope.subject
-    }
+    if envelope.subject.trim().is_empty() { "(no subject)" } else { &envelope.subject }
 }
 
 fn addresses(list: &[crate::mail::Addr]) -> String {

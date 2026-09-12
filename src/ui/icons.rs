@@ -65,35 +65,21 @@ pub fn draw_mailbox(
 
     let stroke = Stroke::new((rect.width() * 0.09).max(1.0), color);
     // Unit coordinates, so every icon is drawn in the same square.
-    let p = |x: f32, y: f32| {
-        egui::pos2(
-            rect.left() + x * rect.width(),
-            rect.top() + y * rect.height(),
-        )
-    };
+    let p =
+        |x: f32, y: f32| egui::pos2(rect.left() + x * rect.width(), rect.top() + y * rect.height());
     let line = |points: Vec<egui::Pos2>| Shape::line(points, stroke);
     let closed = |points: Vec<egui::Pos2>| Shape::closed_line(points, stroke);
 
     match special {
         S::Inbox => {
             // A tray with mail dropping into it.
-            painter.add(line(vec![
-                p(0.08, 0.50),
-                p(0.08, 0.88),
-                p(0.92, 0.88),
-                p(0.92, 0.50),
-            ]));
+            painter.add(line(vec![p(0.08, 0.50), p(0.08, 0.88), p(0.92, 0.88), p(0.92, 0.50)]));
             painter.add(line(vec![p(0.50, 0.12), p(0.50, 0.56)]));
             painter.add(line(vec![p(0.30, 0.38), p(0.50, 0.58), p(0.70, 0.38)]));
         }
         S::Sent => {
             // The same tray, with mail leaving it.
-            painter.add(line(vec![
-                p(0.08, 0.50),
-                p(0.08, 0.88),
-                p(0.92, 0.88),
-                p(0.92, 0.50),
-            ]));
+            painter.add(line(vec![p(0.08, 0.50), p(0.08, 0.88), p(0.92, 0.88), p(0.92, 0.50)]));
             painter.add(line(vec![p(0.50, 0.12), p(0.50, 0.56)]));
             painter.add(line(vec![p(0.30, 0.32), p(0.50, 0.12), p(0.70, 0.32)]));
         }
@@ -127,12 +113,7 @@ pub fn draw_mailbox(
         }
         S::All => {
             // An envelope.
-            painter.add(closed(vec![
-                p(0.06, 0.22),
-                p(0.94, 0.22),
-                p(0.94, 0.82),
-                p(0.06, 0.82),
-            ]));
+            painter.add(closed(vec![p(0.06, 0.22), p(0.94, 0.22), p(0.94, 0.82), p(0.06, 0.82)]));
             painter.add(line(vec![p(0.06, 0.26), p(0.50, 0.58), p(0.94, 0.26)]));
         }
         S::Normal => {

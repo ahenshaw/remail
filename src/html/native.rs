@@ -31,11 +31,7 @@ pub struct RenderOptions {
 
 impl Default for RenderOptions {
     fn default() -> Self {
-        Self {
-            base_size: 14.0,
-            family: egui::FontFamily::Proportional,
-            max_image_width: 720.0,
-        }
+        Self { base_size: 14.0, family: egui::FontFamily::Proportional, max_image_width: 720.0 }
     }
 }
 
@@ -102,9 +98,9 @@ fn draw_block(
                     .show(ui, |ui| {
                         // Code keeps its own line breaks; let it scroll rather
                         // than reflow, which would change its meaning.
-                        egui::ScrollArea::horizontal()
-                            .id_salt(text.as_ptr() as usize)
-                            .show(ui, |ui| {
+                        egui::ScrollArea::horizontal().id_salt(text.as_ptr() as usize).show(
+                            ui,
+                            |ui| {
                                 ui.add(
                                     Label::new(
                                         RichText::new(text)
@@ -114,7 +110,8 @@ fn draw_block(
                                     .selectable(true)
                                     .wrap_mode(egui::TextWrapMode::Extend),
                                 );
-                            });
+                            },
+                        );
                     });
             });
             ui.add_space(options.base_size * 0.45);
@@ -155,11 +152,7 @@ fn quoted(ui: &mut Ui, depth: u8, add_contents: impl FnOnce(&mut Ui)) {
                 add_contents(ui);
             })
             .response;
-        ui.painter().vline(
-            rule.left() - 6.0,
-            response.rect.y_range(),
-            Stroke::new(2.0, accent),
-        );
+        ui.painter().vline(rule.left() - 6.0, response.rect.y_range(), Stroke::new(2.0, accent));
     });
 }
 
@@ -199,14 +192,11 @@ fn draw_table(
     let spacing = 14.0;
     // Share the pane between columns. Without this a long cell widens the
     // grid past the viewport, and everything after it gets clipped.
-    let cell_width = ((ui.available_width() - spacing * columns as f32)
-        / columns as f32)
-        .max(72.0);
+    let cell_width = ((ui.available_width() - spacing * columns as f32) / columns as f32).max(72.0);
 
-    egui::Grid::new(("html-table", salt))
-        .striped(true)
-        .spacing(Vec2::new(spacing, 6.0))
-        .show(ui, |ui| {
+    egui::Grid::new(("html-table", salt)).striped(true).spacing(Vec2::new(spacing, 6.0)).show(
+        ui,
+        |ui| {
             for row in rows {
                 for cell in &row.cells {
                     ui.vertical(|ui| {
@@ -222,7 +212,8 @@ fn draw_table(
                 }
                 ui.end_row();
             }
-        });
+        },
+    );
 }
 
 fn embolden(inline: Inline) -> Inline {
@@ -282,11 +273,7 @@ fn draw_text(
 ) {
     // Code is monospace whatever the pane is set to; its alignment carries
     // meaning that a proportional face would destroy.
-    let family = if style.monospace {
-        egui::FontFamily::Monospace
-    } else {
-        family.clone()
-    };
+    let family = if style.monospace { egui::FontFamily::Monospace } else { family.clone() };
     let mut rich = RichText::new(text).font(FontId::new(size * style.scale, family));
     if style.bold {
         rich = rich.strong();
@@ -327,11 +314,7 @@ fn draw_text(
 /// to the theme's text colour rather than guessing at a correction.
 fn readable(ui: &Ui, color: Color32) -> Color32 {
     let background = ui.visuals().panel_fill;
-    if contrast_ratio(color, background) < 2.5 {
-        ui.visuals().text_color()
-    } else {
-        color
-    }
+    if contrast_ratio(color, background) < 2.5 { ui.visuals().text_color() } else { color }
 }
 
 fn contrast_ratio(a: Color32, b: Color32) -> f32 {
@@ -374,12 +357,8 @@ fn draw_image(
     let limit = options.max_image_width.min(ui.available_width().max(64.0));
     let scale = (limit / requested.x).min(1.0);
 
-    ui.add(
-        egui::Image::new(&texture)
-            .fit_to_exact_size(requested * scale)
-            .corner_radius(2.0),
-    )
-    .on_hover_text(if alt.is_empty() { src } else { alt });
+    ui.add(egui::Image::new(&texture).fit_to_exact_size(requested * scale).corner_radius(2.0))
+        .on_hover_text(if alt.is_empty() { src } else { alt });
 }
 
 /// Stands in for an image that was blocked or could not be decoded, so the
@@ -388,11 +367,7 @@ fn draw_image_placeholder(ui: &mut Ui, alt: &str, options: &RenderOptions) {
     let label = if alt.trim().is_empty() { "image" } else { alt };
     let text = format!("{} {label}", crate::ui::icons::IMAGE);
     let font = FontId::proportional(options.base_size * 0.85);
-    let galley = ui.painter().layout_no_wrap(
-        text,
-        font,
-        ui.visuals().weak_text_color(),
-    );
+    let galley = ui.painter().layout_no_wrap(text, font, ui.visuals().weak_text_color());
 
     let padding = Vec2::new(8.0, 4.0);
     let (rect, _) = ui.allocate_exact_size(galley.size() + padding * 2.0, Sense::hover());

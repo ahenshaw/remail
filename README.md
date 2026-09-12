@@ -1,7 +1,9 @@
 # remail
 
-A fast IMAP and Gmail client in Rust, with an egui interface and an optional
-Servo rendering backend for message bodies.
+[![CI](https://github.com/ahenshaw/remail/actions/workflows/ci.yml/badge.svg)](https://github.com/ahenshaw/remail/actions/workflows/ci.yml)
+
+A fast IMAP and Gmail client in Rust, with an egui interface and a built-in
+renderer for message bodies.
 
 ## What it does
 
@@ -12,8 +14,9 @@ Servo rendering backend for message bodies.
   the server reconciliation arrives moments later.
 - **Push mail.** A second connection parks in `IDLE` per account, so new mail
   arrives without polling. Servers without `IDLE` fall back to a timer.
-- **Two HTML renderers.** A built-in one that draws sanitized mail directly with
-  egui, and Servo for messages that need real CSS layout.
+- **Sanitized HTML, drawn natively.** Message bodies are stripped of active
+  content and laid out with egui, so mail is selectable, themed, and costs
+  nothing when idle.
 - **Per-pane typography.** Folders, messages and the reading column each pick
   their own size and font from any family installed on the system.
 - **Private by default.** Remote images are blocked until you ask for them,
@@ -31,15 +34,9 @@ Servo rendering backend for message bodies.
 cargo run --release
 ```
 
-With the Servo backend:
-
-```sh
-# Servo builds SpiderMonkey from source: expect ~1 hour and ~20 GB the first time.
-LIBCLANG_PATH=/usr/lib/llvm-18/lib cargo run --release --features servo
-```
-
-`LIBCLANG_PATH` is only needed if `bindgen` cannot find `libclang.so` on its
-own. Requires `clang`, `cmake`, `ninja` and `python3`.
+There is nothing to configure and no optional feature to pick. On Linux the
+usual `eframe` libraries are needed at link time: `libxcb-render`,
+`libxcb-shape`, `libxcb-xfixes`, `libxkbcommon` and GL headers.
 
 ## Adding an account
 
@@ -111,7 +108,7 @@ src/
     dom.rs          HTML parser
     layout.rs       lower to a block model
     native.rs       draw the block model with egui
-    servo.rs        drive Servo offscreen (feature = "servo")
+    print.rs        build a standalone document for the browser
   ui/               sidebar, message list, reader, compose, dialogs
 ```
 
@@ -119,24 +116,20 @@ The UI never touches the network and never blocks. It sends commands to the
 mail engine and drains events once per frame; everything on screen is a
 projection of state those events left behind.
 
-### The two renderers
+### The renderer
 
-Both consume the *same* sanitized document, so security does not depend on
-which is selected.
-
-The **built-in** renderer parses sanitized HTML into a small block model
-(paragraphs, headings, lists, quotes, tables, images) and draws it with egui
-widgets. Message text is selectable, follows the app theme, and costs nothing
-when idle. It honours inline `style` colour, weight, and decoration, treats
+The renderer parses sanitized HTML into a small block model (paragraphs,
+headings, lists, quotes, tables, images) and draws it with egui widgets.
+Message text is selectable, follows the app theme, and costs nothing when
+idle. It honours inline `style` colour, weight, and decoration, treats
 one-column tables as the layout scaffolding they usually are, and falls back
 to the theme's text colour when a sender's colour would be invisible against
-the current background. It does not implement the CSS cascade, floats, or
-flexbox — heavily art-directed mail gets linearized into readable content.
+the current background.
 
-The **Servo** backend covers that gap. The body is wrapped in a themed
-document, loaded from a `data:` URL (opaque origin, no ambient authority),
-rendered into a `SoftwareRenderingContext`, and read back as an egui texture.
-Servo is pumped from the UI thread, which is where it must run.
+It does not implement the CSS cascade, floats, or flexbox — heavily
+art-directed mail gets linearized into readable content. When that loses
+something, **Print** renders the message in your browser, which does have a
+full engine.
 
 ### Sync
 
@@ -172,9 +165,16 @@ dropped and rebuilt.
 ## Testing
 
 ```sh
-cargo test                 # unit tests
-cargo test -- --ignored    # adds a live TLS/greeting/LOGIN check against Gmail
+cargo test                      # unit tests
+cargo test -- --ignored         # adds a live check against Gmail
+cargo clippy --all-targets      # CI runs this with -D warnings
+cargo fmt --check
+python3 scripts/glyphs.py       # every drawn icon exists in egui's fonts
 ```
+
+CI runs all of these on push and pull request; see
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml). The live Gmail check
+stays `#[ignore]`d, since it needs credentials.
 
 ## License
 
