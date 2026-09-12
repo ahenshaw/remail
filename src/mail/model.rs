@@ -65,11 +65,21 @@ impl Addr {
     }
 
     /// `Name <addr@example.com>`, or just the address.
+    ///
+    /// A display name holding a comma, or any other character RFC 5322 gives
+    /// a meaning to, is quoted. Unquoted it would read as the end of one
+    /// address and the start of another: "Doe, Jane" becomes two recipients,
+    /// neither of which exists.
     pub fn full(&self) -> String {
-        if self.name.is_empty() {
-            self.email.clone()
+        let name = self.name.trim();
+        if name.is_empty() {
+            return self.email.clone();
+        }
+        if name.contains(|c| "(),:;<>@[]\\\"".contains(c)) {
+            let escaped = name.replace('\\', "\\\\").replace('"', "\\\"");
+            format!("\"{escaped}\" <{}>", self.email)
         } else {
-            format!("{} <{}>", self.name, self.email)
+            format!("{name} <{}>", self.email)
         }
     }
 }
@@ -371,6 +381,22 @@ mod tests {
             delimiter: Some("/".to_string()),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn quotes_display_names_that_would_otherwise_split() {
+        let plain = Addr { name: "Ada Lovelace".into(), email: "ada@example.com".into() };
+        assert_eq!(plain.full(), "Ada Lovelace <ada@example.com>");
+
+        let comma = Addr { name: "Doe, Jane".into(), email: "jane@example.com".into() };
+        assert_eq!(comma.full(), "\"Doe, Jane\" <jane@example.com>");
+
+        // Quotes and backslashes inside the name are escaped, not dropped.
+        let tricky = Addr { name: "A \"B\" C".into(), email: "x@example.com".into() };
+        assert_eq!(tricky.full(), "\"A \\\"B\\\" C\" <x@example.com>");
+
+        let nameless = Addr { name: "  ".into(), email: "x@example.com".into() };
+        assert_eq!(nameless.full(), "x@example.com");
     }
 
     #[test]

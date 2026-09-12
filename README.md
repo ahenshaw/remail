@@ -20,6 +20,8 @@ Servo rendering backend for message bodies.
   per message.
 - **Print** hands the message to your browser, where print preview, page setup
   and PDF export already live.
+- **Recipient completion** from every address the account has seen, ranked so
+  the people you write to come before the lists that write to you.
 
 ## Building
 

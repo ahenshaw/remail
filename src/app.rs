@@ -1867,7 +1867,13 @@ impl RemailApp {
             let config = self.config.read().unwrap().clone();
             let account = config.account(account_id);
 
-            match crate::ui::compose::show(ctx, compose, account, &self.theme) {
+            // The store is the address book: everything the account has seen.
+            let store = self.store.clone();
+            let lookup = move |fragment: &str| {
+                store.suggest_contacts(account_id, fragment, 8).unwrap_or_default()
+            };
+
+            match crate::ui::compose::show(ctx, compose, account, &self.theme, &lookup) {
                 Some(ComposeAction::Send) => {
                     compose.sending = true;
                     let draft = compose.draft.clone();

@@ -100,6 +100,19 @@ impl Store {
 
             CREATE INDEX IF NOT EXISTS body_by_age ON body (fetched);
 
+            -- Addresses seen in mail, for completing recipients.
+            CREATE TABLE IF NOT EXISTS contact (
+                account   INTEGER NOT NULL,
+                email     TEXT    NOT NULL,
+                name      TEXT    NOT NULL DEFAULT '',
+                weight    INTEGER NOT NULL DEFAULT 0,
+                last_seen INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (account, email)
+            );
+
+            CREATE INDEX IF NOT EXISTS contact_rank
+                ON contact (account, weight DESC, last_seen DESC);
+
             -- Remote-content permissions the user has granted. `kind` is 0
             -- for a single message and 1 for a sender address.
             CREATE TABLE IF NOT EXISTS remote_allowed (
@@ -383,6 +396,95 @@ impl Store {
         Ok(())
     }
 
+    // -- contacts ----------------------------------------------------------
+
+    /// Records addresses seen in mail.
+    ///
+    /// `weight` says how much this sighting counts for: an address the user
+    /// actually sent to is worth far more than one that merely appeared in a
+    /// `From:` header, or a mailing list would outrank the people they write
+    /// to. The display name is only overwritten when a better one turns up,
+    /// since many senders put an address in the name slot.
+    pub fn record_contacts(
+        &self,
+        account: AccountId,
+        addresses: &[Addr],
+        weight: i64,
+    ) -> Result<()> {
+        if addresses.is_empty() {
+            return Ok(());
+        }
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        {
+            let mut stmt = tx.prepare(
+                "INSERT INTO contact (account, email, name, weight, last_seen)
+                 VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT(account, email) DO UPDATE SET
+                     weight    = weight + excluded.weight,
+                     last_seen = max(last_seen, excluded.last_seen),
+                     name      = CASE
+                                     WHEN excluded.name <> '' AND
+                                          (name = '' OR name = email)
+                                     THEN excluded.name ELSE name
+                                 END",
+            )?;
+            let now = now_secs();
+            for address in addresses {
+                let email = address.email.trim().to_ascii_lowercase();
+                // Anything without an @ is not an address we can complete to.
+                if email.is_empty() || !email.contains('@') {
+                    continue;
+                }
+                stmt.execute(params![account, email, address.name.trim(), weight, now])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// How many addresses are on file, used to tell a fresh account from one
+    /// whose mail was cached before contacts were being recorded.
+    pub fn contact_count(&self, account: AccountId) -> Result<u32> {
+        let conn = self.conn.lock().unwrap();
+        Ok(conn.query_row(
+            "SELECT count(*) FROM contact WHERE account = ?1",
+            params![account],
+            |r| r.get(0),
+        )?)
+    }
+
+    /// Addresses matching a typed fragment, best first.
+    pub fn suggest_contacts(
+        &self,
+        account: AccountId,
+        needle: &str,
+        limit: u32,
+    ) -> Result<Vec<Addr>> {
+        let needle = needle.trim().to_ascii_lowercase();
+        if needle.is_empty() {
+            return Ok(Vec::new());
+        }
+        let pattern = format!("%{}%", needle.replace('%', "\\%").replace('_', "\\_"));
+
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT name, email FROM contact
+             WHERE account = ?1 AND (email LIKE ?2 ESCAPE '\\' OR lower(name) LIKE ?2 ESCAPE '\\')
+             ORDER BY
+                 -- A match at the start is what the typist meant.
+                 CASE WHEN email LIKE ?3 ESCAPE '\\' OR lower(name) LIKE ?3 ESCAPE '\\'
+                      THEN 0 ELSE 1 END,
+                 weight DESC, last_seen DESC, email
+             LIMIT ?4",
+        )?;
+        let prefix = format!("{}%", needle.replace('%', "\\%").replace('_', "\\_"));
+        let rows = stmt.query_map(params![account, pattern, prefix, limit], |r| {
+            Ok(Addr { name: r.get(0)?, email: r.get(1)? })
+        })?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
     // -- remote content permissions ----------------------------------------
 
     /// Records that one message may load remote content.
@@ -535,7 +637,7 @@ impl Store {
     /// Removes every trace of an account.
     pub fn forget_account(&self, account: AccountId) -> Result<()> {
         let conn = self.conn.lock().unwrap();
-        for table in ["envelope", "body", "mailbox", "remote_allowed"] {
+        for table in ["envelope", "body", "mailbox", "remote_allowed", "contact"] {
             conn.execute(&format!("DELETE FROM {table} WHERE account = ?1"), params![account])?;
         }
         Ok(())
@@ -646,5 +748,89 @@ mod tests {
         store.allow_remote_sender(1, "a@example.com").unwrap();
         store.allow_remote_sender(1, "a@example.com").unwrap();
         assert_eq!(store.remote_sender_count(1).unwrap(), 1);
+    }
+}
+
+#[cfg(test)]
+mod contact_tests {
+    use super::*;
+
+    fn addr(name: &str, email: &str) -> Addr {
+        Addr { name: name.into(), email: email.into() }
+    }
+
+    #[test]
+    fn suggests_what_was_recorded() {
+        let store = Store::open_memory().unwrap();
+        store.record_contacts(1, &[addr("Ada Lovelace", "ada@example.com")], 1).unwrap();
+
+        let found = store.suggest_contacts(1, "ada", 10).unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].email, "ada@example.com");
+        assert_eq!(found[0].name, "Ada Lovelace");
+
+        // Names are searched too, not just addresses.
+        assert_eq!(store.suggest_contacts(1, "lovelace", 10).unwrap().len(), 1);
+        assert!(store.suggest_contacts(1, "babbage", 10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn matches_case_insensitively_and_stores_one_row_per_address() {
+        let store = Store::open_memory().unwrap();
+        store.record_contacts(1, &[addr("Ada", "Ada@Example.com")], 1).unwrap();
+        store.record_contacts(1, &[addr("Ada", "ada@example.COM")], 1).unwrap();
+
+        let found = store.suggest_contacts(1, "ADA", 10).unwrap();
+        assert_eq!(found.len(), 1, "the same address was stored twice");
+    }
+
+    #[test]
+    fn ranks_heavier_and_prefix_matches_first() {
+        let store = Store::open_memory().unwrap();
+        store.record_contacts(1, &[addr("", "someone@example.com")], 1).unwrap();
+        store.record_contacts(1, &[addr("", "sam@example.com")], 20).unwrap();
+
+        let found = store.suggest_contacts(1, "sam", 10).unwrap();
+        assert_eq!(found[0].email, "sam@example.com", "the heavier match lost");
+
+        // "one" appears mid-address in one and not at all in the other.
+        let found = store.suggest_contacts(1, "one", 10).unwrap();
+        assert_eq!(found[0].email, "someone@example.com");
+    }
+
+    #[test]
+    fn a_better_name_replaces_a_placeholder_one() {
+        let store = Store::open_memory().unwrap();
+        store.record_contacts(1, &[addr("", "ada@example.com")], 1).unwrap();
+        store.record_contacts(1, &[addr("Ada Lovelace", "ada@example.com")], 1).unwrap();
+        assert_eq!(store.suggest_contacts(1, "ada", 10).unwrap()[0].name, "Ada Lovelace");
+
+        // But a real name is not replaced by a later empty one.
+        store.record_contacts(1, &[addr("", "ada@example.com")], 1).unwrap();
+        assert_eq!(store.suggest_contacts(1, "ada", 10).unwrap()[0].name, "Ada Lovelace");
+    }
+
+    #[test]
+    fn ignores_entries_that_are_not_addresses() {
+        let store = Store::open_memory().unwrap();
+        store.record_contacts(1, &[addr("Nobody", "not-an-address")], 1).unwrap();
+        store.record_contacts(1, &[addr("", "")], 1).unwrap();
+        assert!(store.suggest_contacts(1, "nobody", 10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn wildcards_in_the_query_are_literal() {
+        let store = Store::open_memory().unwrap();
+        store.record_contacts(1, &[addr("", "ada@example.com")], 1).unwrap();
+        // "%" would match everything if it reached LIKE unescaped.
+        assert!(store.suggest_contacts(1, "%", 10).unwrap().is_empty());
+        assert!(store.suggest_contacts(1, "a_a@", 10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn keeps_contacts_per_account() {
+        let store = Store::open_memory().unwrap();
+        store.record_contacts(1, &[addr("", "ada@example.com")], 1).unwrap();
+        assert!(store.suggest_contacts(2, "ada", 10).unwrap().is_empty());
     }
 }

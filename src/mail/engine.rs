@@ -24,6 +24,20 @@ use crate::auth::{Credential, TokenStore, oauth};
 use crate::config::{AccountConfig, AccountId, AuthMethod, Config};
 use crate::secrets::{self, SecretKind};
 
+/// How much a sighting of an address counts towards completing recipients.
+///
+/// Someone the user chose to write to is worth far more than an address that
+/// merely appeared in a header, or every newsletter would outrank the people
+/// they correspond with.
+mod contact_weight {
+    /// A recipient of a message the user just sent.
+    pub const SENT_TO: i64 = 40;
+    /// A recipient of something already in the Sent or Drafts mailbox.
+    pub const ADDRESSED: i64 = 8;
+    /// Anyone appearing on a message that arrived.
+    pub const SEEN: i64 = 1;
+}
+
 /// Most results a search returns, across every mailbox it covers.
 const SEARCH_LIMIT: usize = 500;
 
@@ -555,6 +569,7 @@ impl AccountWorker {
         self.store.save_mailboxes(self.account, &mailboxes)?;
 
         self.events.emit(Event::Mailboxes { account: self.account, mailboxes });
+        self.backfill_contacts();
 
         // Counting is one round trip per mailbox, which on a large account
         // is slower than the first sync the user is waiting for. Queue it
@@ -617,6 +632,7 @@ impl AccountWorker {
         let highest = fresh.iter().map(|e| e.uid).max().unwrap_or(state.highest_uid);
         if !fresh.is_empty() {
             self.store.save_envelopes(account, mailbox, &fresh)?;
+            self.record_contacts(self.is_outgoing(mailbox), &fresh);
             self.events.emit(Event::Envelopes {
                 account,
                 mailbox: mailbox.to_string(),
@@ -649,6 +665,64 @@ impl AccountWorker {
         self.report_unread(&[mailbox.to_string()]).await;
         self.events.status(account, "Up to date");
         Ok(())
+    }
+
+    /// Files the addresses on a batch of envelopes for recipient completion.
+    ///
+    /// `outgoing` marks a mailbox whose recipients the user chose — Sent or
+    /// Drafts — where the `To:` line is worth much more than a `From:`.
+    fn record_contacts(&self, outgoing: bool, envelopes: &[Envelope]) {
+        let mut addresses = Vec::new();
+        let mut recipients = Vec::new();
+        for envelope in envelopes {
+            addresses.extend(envelope.from.iter().cloned());
+            recipients.extend(envelope.to.iter().cloned());
+            recipients.extend(envelope.cc.iter().cloned());
+        }
+
+        let (weight, recipient_weight) = if outgoing {
+            (contact_weight::SEEN, contact_weight::ADDRESSED)
+        } else {
+            (contact_weight::SEEN, contact_weight::SEEN)
+        };
+        let _ = self.store.record_contacts(self.account, &addresses, weight);
+        let _ = self.store.record_contacts(self.account, &recipients, recipient_weight);
+    }
+
+    /// Whether a mailbox holds mail the user sent rather than received.
+    fn is_outgoing(&self, mailbox: &str) -> bool {
+        self.store
+            .load_mailboxes(self.account)
+            .unwrap_or_default()
+            .into_iter()
+            .find(|candidate| candidate.name == mailbox)
+            .is_some_and(|candidate| {
+                matches!(candidate.special, SpecialUse::Sent | SpecialUse::Drafts)
+            })
+    }
+
+    /// Mines addresses out of mail that was cached before contacts were being
+    /// recorded, so completion works from the first compose rather than only
+    /// for mail that arrives from now on.
+    fn backfill_contacts(&self) {
+        if self.store.contact_count(self.account).unwrap_or(0) > 0 {
+            return;
+        }
+        let mailboxes = self.store.load_mailboxes(self.account).unwrap_or_default();
+        let mut mined = 0usize;
+        for mailbox in mailboxes.iter().filter(|mailbox| mailbox.selectable) {
+            let envelopes = self
+                .store
+                .load_envelopes(self.account, &mailbox.name, 20_000)
+                .unwrap_or_default();
+            let outgoing =
+                matches!(mailbox.special, SpecialUse::Sent | SpecialUse::Drafts);
+            mined += envelopes.len();
+            self.record_contacts(outgoing, &envelopes);
+        }
+        if mined > 0 {
+            tracing::info!("built contacts from {mined} cached messages");
+        }
     }
 
     /// Compares cached flags with the server's, and notices deletions.
@@ -973,6 +1047,16 @@ impl AccountWorker {
 
         let credential = self.credential(&account).await?;
         let sent = smtp::send(&account, &credential, &draft).await?;
+
+        // The strongest signal there is about who the user writes to.
+        let recipients: Vec<_> = [&draft.to, &draft.cc, &draft.bcc]
+            .iter()
+            .flat_map(|list| super::parse::parse_address_list(list))
+            .collect();
+        let _ = self
+            .store
+            .record_contacts(self.account, &recipients, contact_weight::SENT_TO);
+
         self.events.emit(Event::Sent);
         self.events.status(self.account, "Message sent");
 
