@@ -24,6 +24,9 @@ pub struct ListInput<'a> {
     pub compact: bool,
     /// Font this pane draws in.
     pub font: FontId,
+    /// This pane's background, which the stripe is derived from so the two
+    /// cannot drift apart.
+    pub surface: Color32,
     /// Scroll so the cursor is visible; set after a keyboard move.
     pub scroll_to_cursor: bool,
     pub empty_message: &'a str,
@@ -136,7 +139,7 @@ fn draw_row(
     // is not guaranteed to differ from the panel colour the app sets.
     let palette = &input.theme.palette;
     if index % 2 == 1 {
-        painter.rect_filled(rect, 0.0, palette.depth_tint(palette.bg, 0.022));
+        painter.rect_filled(rect, 0.0, palette.depth_tint(input.surface, 0.022));
     }
 
     let background = if is_cursor {

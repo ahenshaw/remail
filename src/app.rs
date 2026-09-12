@@ -1130,12 +1130,12 @@ impl eframe::App for RemailApp {
         let ctx = ui.ctx().clone();
         let mut action = None;
 
-        // Three surfaces, deepest to shallowest: folders, messages, reading.
-        // In a light theme `card` is lighter than `bg`, so the reading column
-        // is the brightest thing on screen and the folder list recedes.
+        // The folder list recedes onto the app surface; the messages and
+        // reading panes share the card colour, so they read as one sheet of
+        // paper split by the panel's separator line.
         let palette = &self.theme.palette;
         let folders_fill = palette.depth_tint(palette.bg, 0.025);
-        let messages_fill = palette.bg;
+        let messages_fill = palette.card;
         let reading_fill = palette.card;
         let surface = |fill: egui::Color32, margin: i8| {
             egui::Frame::new().fill(fill).inner_margin(margin)
@@ -1199,7 +1199,9 @@ impl eframe::App for RemailApp {
             .size_range(180.0..=760.0)
             .frame(surface(messages_fill, 0))
             .show(ui, |ui| {
-                action = action.take().or(self.message_list(ui, messages_font.clone()));
+                action = action
+                    .take()
+                    .or(self.message_list(ui, messages_font.clone(), messages_fill));
             });
 
         egui::CentralPanel::default()
@@ -1405,7 +1407,12 @@ impl RemailApp {
         action
     }
 
-    fn message_list(&mut self, ui: &mut egui::Ui, font: egui::FontId) -> Option<Action> {
+    fn message_list(
+        &mut self,
+        ui: &mut egui::Ui,
+        font: egui::FontId,
+        surface: egui::Color32,
+    ) -> Option<Action> {
         let visible = self.visible();
         let compact = self.config.read().unwrap().ui.compact_list;
 
@@ -1430,6 +1437,7 @@ impl RemailApp {
                 show_folder: spans_mailboxes(&visible),
                 theme: &self.theme,
                 font,
+                surface,
                 scroll_to_cursor,
                 empty_message,
             },
