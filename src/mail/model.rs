@@ -175,19 +175,6 @@ pub enum SpecialUse {
 }
 
 impl SpecialUse {
-    pub fn icon(self) -> &'static str {
-        match self {
-            SpecialUse::Inbox => "\u{1F4E5}",
-            SpecialUse::Sent => "\u{1F4E4}",
-            SpecialUse::Drafts => "\u{1F4DD}",
-            SpecialUse::Trash => "\u{1F5D1}",
-            SpecialUse::Junk => "\u{26A0}",
-            SpecialUse::Archive => "\u{1F4E6}",
-            SpecialUse::All => "\u{1F4E7}",
-            SpecialUse::Normal => "\u{1F4C1}",
-        }
-    }
-
     /// Sort rank so the common mailboxes stay at the top of the sidebar.
     pub fn rank(self) -> u8 {
         match self {

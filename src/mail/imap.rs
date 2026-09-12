@@ -711,7 +711,12 @@ mod tests {
         println!("--- sidebar ---");
         for mailbox in boxes.iter().filter(|m| m.selectable) {
             let depth = mailbox.display_depth(|path| shown.contains(path));
-            println!("{}{} {}", "    ".repeat(depth), mailbox.special.icon(), mailbox.leaf());
+            println!(
+                "{}{:<9} {}",
+                "    ".repeat(depth),
+                format!("[{:?}]", mailbox.special),
+                mailbox.display_name()
+            );
         }
     }
 

@@ -167,7 +167,6 @@ fn account_header(
     let visuals = ui.visuals();
     let painter = ui.painter();
     let text_font = FontId::new(font.size, font.family.clone());
-    let baseline = centre_text(painter, rect, &text_font);
 
     // Drawn rather than set: neither small triangle has a glyph in the
     // bundled fonts, and a disclosure arrow that renders as a box is worse
@@ -186,12 +185,16 @@ fn account_header(
     );
 
     let left = rect.left() + 26.0;
-    let _ = paint_truncated(
-        painter,
-        pos2(left, baseline),
-        rect.right() - left - 4.0,
-        name,
+    // Laid out first so the row can centre it, rather than centring an
+    // estimate of where the text will land.
+    let galley = painter.layout_no_wrap(
+        name.to_string(),
         text_font,
+        visuals.strong_text_color(),
+    );
+    painter.galley(
+        pos2(left, rect.center().y - galley.size().y * 0.5),
+        galley,
         visuals.strong_text_color(),
     );
 
@@ -235,53 +238,57 @@ fn mailbox_row(
     } else {
         visuals.text_color()
     };
+    let indent = rect.left() + 6.0 + 9.0 * depth as f32;
+
+    // Lay the label out first so the icon can be aligned to the text that is
+    // actually there, rather than to an estimate of it.
     let text_font = FontId::new(font.size, font.family.clone());
-    let baseline = centre_text(painter, rect, &text_font);
+    let icon_size = font.size * 0.96;
+    let text_left = indent + icon_size + font.size * 0.38;
 
-    // Indentation is deliberately small: the pane may be very narrow.
-    let icon_left = rect.left() + 6.0 + 9.0 * depth as f32;
-
-    // Laid out rather than drawn directly, so the label can be placed against
-    // the icon's real width. Emoji advance widths vary, and guessing one left
-    // the text touching some icons and adrift from others.
-    let icon = painter.layout_no_wrap(
-        mailbox.special.icon().to_string(),
-        FontId::proportional(super::icons::size_beside_text(font.size)),
-        icon_color(mailbox.special, palette),
-    );
-    let icon_width = icon.size().x;
-    // Centred on the label's line, not on the row: the two were previously
-    // positioned by different rules, which is what left the icons sitting low.
-    let line_centre = baseline + line_height(painter, &text_font) * 0.5;
-    painter.galley(
-        pos2(icon_left, line_centre - icon.size().y * 0.5),
-        icon,
-        visuals.text_color(),
-    );
-
-    // Reserve room for the unread badge before laying out the name.
+    // Reserve the badge before wrapping, so a long name shortens rather than
+    // running under the count.
     let mut right = rect.right() - 4.0;
-    if unread {
-        let badge = mailbox.unseen.to_string();
-        let galley = painter.layout_no_wrap(
-            badge,
+    let badge = unread.then(|| {
+        painter.layout_no_wrap(
+            mailbox.unseen.to_string(),
             FontId::new(font.size * 0.82, font.family.clone()),
             accent,
-        );
-        let width = galley.size().x;
-        painter.galley(pos2(right - width, baseline + font.size * 0.08), galley, accent);
-        right -= width + 6.0;
+        )
+    });
+    if let Some(badge) = &badge {
+        right -= badge.size().x + 6.0;
     }
 
-    let text_left = icon_left + icon_width + font.size * 0.34;
+    let metrics = TextMetrics::measure(painter, &text_font);
+    let top = rect.center().y - metrics.line_height * 0.5;
     let shortened = paint_truncated(
         painter,
-        pos2(text_left, baseline),
+        pos2(text_left, top),
         right - text_left,
         mailbox.display_name(),
         text_font,
         color,
     );
+
+    // Stood on the text baseline, the way a capital letter is. Centring the
+    // icon on the row does not work: a line box holds a descender's worth of
+    // space below the baseline, so its centre sits well under the letters.
+    let baseline = top + metrics.baseline;
+    super::icons::draw_mailbox(
+        painter,
+        Rect::from_min_size(
+            pos2(indent, baseline - icon_size),
+            Vec2::splat(icon_size),
+        ),
+        mailbox.special,
+        icon_color(mailbox.special, palette),
+    );
+
+    if let Some(badge) = badge {
+        let y = rect.center().y - badge.size().y * 0.5;
+        painter.galley(pos2(right + 6.0, y), badge, accent);
+    }
 
     // Only offer the full path when the name is actually cut off, or when the
     // leaf alone is ambiguous because the folder is nested.
@@ -318,19 +325,30 @@ fn icon_color(special: SpecialUse, palette: &elegance::Palette) -> Color32 {
     }
 }
 
-/// The height of one line of text in this font, as laid out.
-fn line_height(painter: &egui::Painter, font: &FontId) -> f32 {
-    // Measured rather than taken from the nominal size, which ignores the
-    // ascent and descent the font actually asks for.
-    painter
-        .layout_no_wrap("Ag".to_string(), font.clone(), Color32::PLACEHOLDER)
-        .size()
-        .y
+/// Where the ink sits inside a line of text.
+///
+/// The nominal font size says nothing about this: a line box reserves room
+/// for ascenders and descenders, so its centre is not where the letters look
+/// centred, and its top is not where they start.
+struct TextMetrics {
+    line_height: f32,
+    /// Baseline, measured down from the top of the line box.
+    baseline: f32,
 }
 
-/// Top of a line of text centred vertically in `rect`.
-fn centre_text(painter: &egui::Painter, rect: Rect, font: &FontId) -> f32 {
-    rect.center().y - line_height(painter, font) * 0.5
+impl TextMetrics {
+    fn measure(painter: &egui::Painter, font: &FontId) -> Self {
+        let galley =
+            painter.layout_no_wrap("X".to_string(), font.clone(), Color32::PLACEHOLDER);
+        let baseline = galley
+            .rows
+            .first()
+            .and_then(|row| row.row.glyphs.first().map(|glyph| row.pos.y + glyph.pos.y))
+            // A font with no glyph for "X" is not worth a special case; the
+            // ascender of a typical face is close enough to keep going.
+            .unwrap_or(font.size * 0.8);
+        Self { line_height: galley.size().y, baseline }
+    }
 }
 
 /// A filled triangle pointing down when expanded, right when collapsed.
