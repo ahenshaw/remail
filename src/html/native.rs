@@ -22,6 +22,8 @@ pub trait ImageSource {
 pub struct RenderOptions {
     /// Base body text size in points.
     pub base_size: f32,
+    /// Family for body text. Code keeps its own monospace face regardless.
+    pub family: egui::FontFamily,
     /// Upper bound on image width, so a 2000px banner does not blow out the
     /// reader pane.
     pub max_image_width: f32,
@@ -29,7 +31,11 @@ pub struct RenderOptions {
 
 impl Default for RenderOptions {
     fn default() -> Self {
-        Self { base_size: 14.0, max_image_width: 720.0 }
+        Self {
+            base_size: 14.0,
+            family: egui::FontFamily::Proportional,
+            max_image_width: 720.0,
+        }
     }
 }
 
@@ -255,7 +261,7 @@ fn draw_inlines(
                     ui.end_row();
                 }
                 Inline::Text { text, style, link } => {
-                    draw_text(ui, text, style, link.as_deref(), size, clicked);
+                    draw_text(ui, text, style, link.as_deref(), size, &options.family, clicked);
                 }
                 Inline::Image { src, alt, width, height } => {
                     draw_image(ui, src, alt, *width, *height, images, options);
@@ -271,9 +277,17 @@ fn draw_text(
     style: &Style,
     link: Option<&str>,
     size: f32,
+    family: &egui::FontFamily,
     clicked: &mut Option<String>,
 ) {
-    let mut rich = RichText::new(text).size(size * style.scale);
+    // Code is monospace whatever the pane is set to; its alignment carries
+    // meaning that a proportional face would destroy.
+    let family = if style.monospace {
+        egui::FontFamily::Monospace
+    } else {
+        family.clone()
+    };
+    let mut rich = RichText::new(text).font(FontId::new(size * style.scale, family));
     if style.bold {
         rich = rich.strong();
     }
@@ -282,9 +296,6 @@ fn draw_text(
     }
     if style.strike {
         rich = rich.strikethrough();
-    }
-    if style.monospace {
-        rich = rich.monospace();
     }
 
     match link {

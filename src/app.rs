@@ -923,6 +923,17 @@ impl eframe::App for RemailApp {
         let ctx = ui.ctx().clone();
         let mut action = None;
 
+        // Three surfaces, deepest to shallowest: folders, messages, reading.
+        // In a light theme `card` is lighter than `bg`, so the reading column
+        // is the brightest thing on screen and the folder list recedes.
+        let palette = &self.theme.palette;
+        let folders_fill = palette.depth_tint(palette.bg, 0.07);
+        let messages_fill = palette.bg;
+        let reading_fill = palette.card;
+        let surface = |fill: egui::Color32, margin: i8| {
+            egui::Frame::new().fill(fill).inner_margin(margin)
+        };
+
         egui::Panel::top("toolbar").show(ui, |ui| {
             action = action.take().or(self.toolbar(ui));
         });
@@ -932,8 +943,10 @@ impl eframe::App for RemailApp {
         });
 
         egui::Panel::left("sidebar")
-            .default_size(216.0)
-            .size_range(160.0..=340.0)
+            .default_size(200.0)
+            // Narrow enough to become a strip of icons and initials.
+            .size_range(56.0..=460.0)
+            .frame(surface(folders_fill, 2))
             .show(ui, |ui| {
                 let config = self.config.read().unwrap().clone();
                 let selected = self
@@ -942,21 +955,31 @@ impl eframe::App for RemailApp {
                     .map(|(account, mailbox)| (*account, mailbox.as_str()));
                 let found = sidebar::show(
                     ui,
-                    SidebarInput { config: &config, accounts: &mut self.accounts, selected },
+                    SidebarInput {
+                        config: &config,
+                        accounts: &mut self.accounts,
+                        selected,
+                        style: config.ui.folders,
+                        base_size: config.ui.font_size,
+                        theme: &self.theme,
+                    },
                 );
                 action = action.take().or(found);
             });
 
         egui::Panel::left("messages")
             .default_size(380.0)
-            .size_range(260.0..=680.0)
+            .size_range(180.0..=760.0)
+            .frame(surface(messages_fill, 0))
             .show(ui, |ui| {
                 action = action.take().or(self.message_list(ui));
             });
 
-        egui::CentralPanel::default().show(ui, |ui| {
-            action = action.take().or(self.reader(ui));
-        });
+        egui::CentralPanel::default()
+            .frame(surface(reading_fill, 8))
+            .show(ui, |ui| {
+                action = action.take().or(self.reader(ui));
+            });
 
         self.dialogs(&ctx);
         self.toasts_frame(&ctx);
@@ -1114,10 +1137,11 @@ impl RemailApp {
 
     fn message_list(&mut self, ui: &mut egui::Ui) -> Option<Action> {
         let visible = self.visible();
-        let (compact, base_size) = {
+        let (compact, base_size, style) = {
             let config = self.config.read().unwrap();
-            (config.ui.compact_list, config.ui.font_size)
+            (config.ui.compact_list, config.ui.font_size, config.ui.messages)
         };
+        let font = crate::ui::pane_font(style, base_size);
 
         let empty_message = if self.open_mailbox.is_none() {
             "Select a mailbox"
@@ -1137,7 +1161,8 @@ impl RemailApp {
                 cursor: self.cursor,
                 selection: &self.selection,
                 compact,
-                base_size,
+                base_size: font.size,
+                family: font.family.clone(),
                 scroll_to_cursor,
                 empty_message,
             },
@@ -1169,7 +1194,10 @@ impl RemailApp {
     }
 
     fn reader(&mut self, ui: &mut egui::Ui) -> Option<Action> {
-        let base_size = self.config.read().unwrap().ui.font_size;
+        let (base_size, style) = {
+            let config = self.config.read().unwrap();
+            (config.ui.font_size, config.ui.reading)
+        };
         // Resolved before the mutable borrow of `open_message` below.
         let servo_active = self.servo_active();
 
@@ -1185,6 +1213,7 @@ impl RemailApp {
                     remote: &mut self.remote_images,
                     allow_remote: false,
                     base_size,
+                    style,
                     show_source: &mut false,
                     loading: false,
                     theme: &self.theme,
@@ -1205,6 +1234,7 @@ impl RemailApp {
                 remote: &mut self.remote_images,
                 allow_remote: open.allow_remote,
                 base_size,
+                style,
                 show_source: &mut open.show_source,
                 loading: open.body.is_none(),
                 theme: &self.theme,

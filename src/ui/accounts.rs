@@ -10,7 +10,8 @@ use elegance::{
 };
 
 use crate::config::{
-    AccountConfig, AccountId, AuthMethod, Config, Encryption, HtmlBackend, ThemeChoice,
+    AccountConfig, AccountId, AuthMethod, Config, Encryption, HtmlBackend, PaneFont, PaneStyle,
+    ThemeChoice,
 };
 
 /// What the dialogs are asking the app to do.
@@ -242,7 +243,11 @@ fn editor(
     egui::ScrollArea::vertical().max_height(420.0).auto_shrink([false, true]).show(ui, |ui| {
         ui.add(TextInput::new(&mut account.email).label("Email address").hint("you@example.com"));
         ui.add(TextInput::new(&mut account.display_name).label("Display name").hint("Your Name"));
-        ui.add(TextInput::new(&mut account.label).label("Sidebar label"));
+        ui.add(
+            TextInput::new(&mut account.label)
+                .label("Short name")
+                .hint("shown in the sidebar"),
+        );
 
         ui.add_space(10.0);
         ui.label(theme.heading_text("Authentication"));
@@ -333,10 +338,6 @@ fn editor(
             if account.username.trim().is_empty() {
                 account.username = account.email.clone();
             }
-            if account.label.trim().is_empty() {
-                account.label = account.email.clone();
-            }
-
             let id = account.id;
             let password = std::mem::take(&mut dialog.password);
             action = Some(AccountsAction::Save(account.clone()));
@@ -426,6 +427,37 @@ pub fn settings(
             );
             ui.add(Switch::new(&mut config.ui.compact_list, "Compact message list"));
 
+            ui.add_space(10.0);
+            ui.label(theme.heading_text("Panes"));
+            ui.label(theme.faint_text(
+                "Each pane can override the base size. A denser folder list and a \
+                 larger reading column usually read best.",
+            ));
+            ui.add_space(4.0);
+
+            let base = config.ui.font_size;
+            pane_row(ui, "Folders", "folders", &mut config.ui.folders, base);
+            pane_row(ui, "Messages", "messages", &mut config.ui.messages, base);
+            pane_row(ui, "Reading", "reading", &mut config.ui.reading, base);
+
+            let overridden = config.ui.folders.font_size.is_some()
+                || config.ui.messages.font_size.is_some()
+                || config.ui.reading.font_size.is_some();
+            if ui
+                .add(
+                    Button::new("Match base size")
+                        .size(ButtonSize::Small)
+                        .outline()
+                        .enabled(overridden),
+                )
+                .on_hover_text("Drop every per-pane size override")
+                .clicked()
+            {
+                config.ui.folders.font_size = None;
+                config.ui.messages.font_size = None;
+                config.ui.reading.font_size = None;
+            }
+
             ui.add_space(12.0);
             ui.label(theme.heading_text("Reading"));
 
@@ -484,6 +516,35 @@ pub fn settings(
     action
 }
 
+/// One pane's font family and size.
+fn pane_row(ui: &mut Ui, label: &str, id: &str, style: &mut PaneStyle, base: f32) {
+    ui.horizontal(|ui| {
+        ui.add_sized([74.0, 20.0], egui::Label::new(label));
+
+        let mut font = style.font;
+        ui.add(
+            Select::new(id, &mut font)
+                .options(PaneFont::all().map(|f| (f, f.label())))
+                .width(84.0),
+        );
+        style.font = font;
+
+        // The slider starts at whatever the pane draws at today; touching it
+        // pins an override, which "Match base size" clears again.
+        let mut size = style.size(base);
+        if ui
+            .add(
+                elegance::Slider::new(&mut size, 9.0..=26.0)
+                    .decimals(0)
+                    .desired_width(150.0),
+            )
+            .changed()
+        {
+            style.font_size = Some(size);
+        }
+    });
+}
+
 /// Field-wise comparison; `UiSettings` holds floats, so `PartialEq` on the
 /// struct would be the wrong tool for "did the user change something".
 fn settings_equal(a: &crate::config::UiSettings, b: &crate::config::UiSettings) -> bool {
@@ -495,4 +556,7 @@ fn settings_equal(a: &crate::config::UiSettings, b: &crate::config::UiSettings) 
         && a.compact_list == b.compact_list
         && (a.font_size - b.font_size).abs() < f32::EPSILON
         && (a.mark_read_after_secs - b.mark_read_after_secs).abs() < f32::EPSILON
+        && a.folders == b.folders
+        && a.messages == b.messages
+        && a.reading == b.reading
 }

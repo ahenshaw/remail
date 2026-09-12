@@ -23,6 +23,8 @@ pub struct ReaderInput<'a> {
     /// Whether this message may load remote content.
     pub allow_remote: bool,
     pub base_size: f32,
+    /// Text settings for this pane.
+    pub style: crate::config::PaneStyle,
     pub show_source: &'a mut bool,
     /// The body has been requested but has not arrived.
     pub loading: bool,
@@ -92,8 +94,10 @@ pub fn show(ui: &mut Ui, input: ReaderInput<'_>) -> Option<Action> {
                 remote: input.remote,
                 allow_remote: input.allow_remote,
             };
+            let font = super::pane_font(input.style, input.base_size);
             let options = RenderOptions {
-                base_size: input.base_size,
+                base_size: font.size,
+                family: font.family.clone(),
                 max_image_width: width.max(200.0),
             };
             if let Some(url) =

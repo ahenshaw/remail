@@ -12,7 +12,9 @@ pub mod message_list;
 pub mod reader;
 pub mod sidebar;
 
-use crate::config::AccountId;
+use egui::{Color32, FontFamily, FontId};
+
+use crate::config::{AccountId, PaneFont, PaneStyle};
 
 /// Something the user did that the app needs to act on.
 #[derive(Debug, Clone)]
@@ -118,4 +120,57 @@ mod tests {
         assert_eq!(format_date_short(0), "");
         assert_eq!(format_date_long(0), "unknown date");
     }
+}
+
+/// The font a pane draws its own text in.
+pub fn pane_font(style: PaneStyle, base_size: f32) -> FontId {
+    let family = match style.font {
+        PaneFont::Sans => FontFamily::Proportional,
+        PaneFont::Mono => FontFamily::Monospace,
+    };
+    FontId::new(style.size(base_size), family)
+}
+
+/// Draws one line of text, truncating with an ellipsis at `max_width`.
+///
+/// Shared by the panes that paint their own rows, so folder names and subject
+/// lines shorten the same way when a pane is narrow. Returns whether the text
+/// had to be shortened, which callers use to decide if a tooltip would tell
+/// the reader anything they cannot already see.
+pub fn paint_truncated(
+    painter: &egui::Painter,
+    position: egui::Pos2,
+    max_width: f32,
+    text: &str,
+    font: FontId,
+    color: Color32,
+) -> bool {
+    if text.is_empty() || max_width <= 8.0 {
+        return false;
+    }
+    let mut galley = painter.layout_no_wrap(text.to_string(), font.clone(), color);
+    let mut truncated = false;
+
+    if galley.size().x > max_width {
+        truncated = true;
+        // Binary search the longest prefix that fits, on character
+        // boundaries so multi-byte text never splits mid-character.
+        let chars: Vec<char> = text.chars().collect();
+        let mut low = 0usize;
+        let mut high = chars.len();
+        while low < high {
+            let mid = (low + high + 1) / 2;
+            let candidate: String = chars[..mid].iter().collect::<String>() + "\u{2026}";
+            let width = painter.layout_no_wrap(candidate, font.clone(), color).size().x;
+            if width <= max_width {
+                low = mid;
+            } else {
+                high = mid - 1;
+            }
+        }
+        let shortened: String = chars[..low].iter().collect::<String>() + "\u{2026}";
+        galley = painter.layout_no_wrap(shortened, font, color);
+    }
+    painter.galley(position, galley, color);
+    truncated
 }

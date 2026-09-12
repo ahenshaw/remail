@@ -67,6 +67,46 @@ impl ThemeChoice {
     }
 }
 
+/// Font family for a pane. Only the families egui has loaded are available;
+/// elegance installs one proportional and one monospace face.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PaneFont {
+    #[default]
+    Sans,
+    Mono,
+}
+
+impl PaneFont {
+    pub fn label(self) -> &'static str {
+        match self {
+            PaneFont::Sans => "Sans",
+            PaneFont::Mono => "Mono",
+        }
+    }
+
+    pub fn all() -> [PaneFont; 2] {
+        [PaneFont::Sans, PaneFont::Mono]
+    }
+}
+
+/// Per-pane text settings. Each pane can differ: a dense folder list and a
+/// comfortable reading column want different sizes.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PaneStyle {
+    /// Overrides [`UiSettings::font_size`] for this pane when set.
+    pub font_size: Option<f32>,
+    pub font: PaneFont,
+}
+
+impl PaneStyle {
+    /// The size this pane actually draws at.
+    pub fn size(self, base: f32) -> f32 {
+        self.font_size.unwrap_or(base).clamp(8.0, 32.0)
+    }
+}
+
 /// Which engine renders `text/html` message bodies.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -176,12 +216,27 @@ impl AccountConfig {
         }
     }
 
-    /// Name shown in the sidebar, falling back to the address.
+    /// Full name for dialogs and notifications.
     pub fn title(&self) -> &str {
-        if self.label.is_empty() {
+        if self.label.trim().is_empty() {
             &self.email
         } else {
             &self.label
+        }
+    }
+
+    /// Short name for the sidebar, where horizontal space is scarce.
+    ///
+    /// Uses the configured label, unless it is just the address again (the
+    /// old default), in which case the local part is a far better fit.
+    pub fn short_name(&self) -> &str {
+        let label = self.label.trim();
+        if !label.is_empty() && label != self.email.trim() {
+            return label;
+        }
+        match self.email.split('@').next() {
+            Some(local) if !local.is_empty() => local,
+            _ => &self.email,
         }
     }
 }
@@ -198,7 +253,11 @@ pub struct UiSettings {
     pub poll_interval_secs: u64,
     /// Envelopes fetched per mailbox on the initial sync.
     pub initial_sync_count: u32,
+    /// Base text size, used by any pane without its own override.
     pub font_size: f32,
+    pub folders: PaneStyle,
+    pub messages: PaneStyle,
+    pub reading: PaneStyle,
     pub compact_list: bool,
     /// Mark a message `\Seen` after it has been open this long. 0 disables.
     pub mark_read_after_secs: f32,
@@ -213,6 +272,9 @@ impl Default for UiSettings {
             poll_interval_secs: 120,
             initial_sync_count: 500,
             font_size: 14.0,
+            folders: PaneStyle::default(),
+            messages: PaneStyle::default(),
+            reading: PaneStyle::default(),
             compact_list: false,
             mark_read_after_secs: 1.5,
         }
@@ -283,4 +345,51 @@ pub fn data_dir() -> Result<PathBuf> {
     let dir = project_dirs()?.data_dir().to_path_buf();
     fs::create_dir_all(&dir)?;
     Ok(dir)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn account(email: &str, label: &str) -> AccountConfig {
+        let mut a = AccountConfig::gmail(0, email);
+        a.label = label.to_string();
+        a
+    }
+
+    #[test]
+    fn shortens_the_address_when_no_label_is_set() {
+        assert_eq!(account("andrew.henshaw@example.com", "").short_name(), "andrew.henshaw");
+    }
+
+    #[test]
+    fn prefers_a_real_label() {
+        assert_eq!(account("andrew@example.com", "Work").short_name(), "Work");
+    }
+
+    #[test]
+    fn treats_a_label_equal_to_the_address_as_unset() {
+        // The old default filled the label with the address, which is exactly
+        // the long string the sidebar has no room for.
+        let a = account("andrew.henshaw@example.com", "andrew.henshaw@example.com");
+        assert_eq!(a.short_name(), "andrew.henshaw");
+    }
+
+    #[test]
+    fn falls_back_to_the_whole_address_when_there_is_no_local_part() {
+        assert_eq!(account("@example.com", "").short_name(), "@example.com");
+    }
+
+    #[test]
+    fn pane_size_falls_back_to_the_base() {
+        let base = PaneStyle::default();
+        assert_eq!(base.size(15.0), 15.0);
+
+        let pinned = PaneStyle { font_size: Some(11.0), ..Default::default() };
+        assert_eq!(pinned.size(15.0), 11.0);
+
+        // Absurd values from a hand-edited config stay usable.
+        let silly = PaneStyle { font_size: Some(900.0), ..Default::default() };
+        assert_eq!(silly.size(15.0), 32.0);
+    }
 }

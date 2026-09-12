@@ -9,7 +9,7 @@ use std::ops::Range;
 
 use egui::{Align2, Color32, FontId, Rect, Sense, Stroke, Ui, Vec2, pos2};
 
-use super::{Action, format_date_short};
+use super::{Action, format_date_short, paint_truncated};
 use crate::mail::{Envelope, Flags};
 
 pub struct ListInput<'a> {
@@ -19,6 +19,8 @@ pub struct ListInput<'a> {
     pub selection: &'a BTreeSet<u32>,
     pub compact: bool,
     pub base_size: f32,
+    /// Font family this pane draws in.
+    pub family: egui::FontFamily,
     /// Scroll so the cursor is visible; set after a keyboard move.
     pub scroll_to_cursor: bool,
     pub empty_message: &'a str,
@@ -115,6 +117,8 @@ fn draw_row(
 ) {
     let visuals = ui.visuals();
     let painter = ui.painter();
+    let family = input.family.clone();
+    let font = |size: f32| FontId::new(size, family.clone());
 
     let background = if is_cursor {
         visuals.selection.bg_fill.gamma_multiply(0.55)
@@ -160,7 +164,7 @@ fn draw_row(
     } else {
         let galley = painter.layout_no_wrap(
             date.clone(),
-            FontId::proportional(size * 0.82),
+            font(size * 0.82),
             weak,
         );
         let width = galley.size().x;
@@ -175,48 +179,44 @@ fn draw_row(
         .unwrap_or_else(|| "(unknown sender)".to_string());
 
     let first_line_width = (right - date_width - text_left).max(40.0);
-    draw_clipped(
+    let _ = paint_truncated(
         painter,
         pos2(text_left, rect.top() + 6.0),
         first_line_width,
         &sender,
-        FontId::proportional(size * 0.95),
+        font(size * 0.95),
         if unread { strong } else { normal },
-        unread,
     );
 
     if input.compact {
         // One line: sender, then subject sharing the row.
         let subject_left = text_left + first_line_width * 0.32;
-        draw_clipped(
+        let _ = paint_truncated(
             painter,
             pos2(subject_left, rect.top() + 6.0),
             (right - date_width - subject_left).max(40.0),
             display_subject(envelope),
-            FontId::proportional(size * 0.95),
+            font(size * 0.95),
             if unread { strong } else { normal },
-            false,
         );
     } else {
-        draw_clipped(
+        let _ = paint_truncated(
             painter,
             pos2(text_left, rect.top() + size * 1.5),
             right - text_left,
             display_subject(envelope),
-            FontId::proportional(size * 0.95),
+            font(size * 0.95),
             if unread { strong } else { normal },
-            false,
         );
 
         if !envelope.preview.is_empty() {
-            draw_clipped(
+            let _ = paint_truncated(
                 painter,
                 pos2(text_left, rect.top() + size * 2.6),
                 right - text_left,
                 &envelope.preview,
-                FontId::proportional(size * 0.82),
+                font(size * 0.82),
                 weak,
-                false,
             );
         }
     }
@@ -226,7 +226,7 @@ fn draw_row(
             pos2(right - 4.0, rect.bottom() - 8.0),
             Align2::RIGHT_BOTTOM,
             "\u{1F4CE}",
-            FontId::proportional(size * 0.8),
+            font(size * 0.8),
             weak,
         );
     }
@@ -236,7 +236,7 @@ fn draw_row(
         pos2(rect.right() - 16.0, rect.top() + 8.0),
         Align2::CENTER_TOP,
         if starred { "\u{2605}" } else { "\u{2606}" },
-        FontId::proportional(size * 0.95),
+        font(size * 0.95),
         if starred { Color32::from_rgb(230, 180, 60) } else { weak.gamma_multiply(0.6) },
     );
 }
@@ -247,42 +247,4 @@ fn display_subject(envelope: &Envelope) -> &str {
     } else {
         &envelope.subject
     }
-}
-
-/// Draws one line of text, truncating with an ellipsis at `max_width`.
-fn draw_clipped(
-    painter: &egui::Painter,
-    position: egui::Pos2,
-    max_width: f32,
-    text: &str,
-    font: FontId,
-    color: Color32,
-    strong: bool,
-) {
-    if text.is_empty() || max_width <= 8.0 {
-        return;
-    }
-    let font = if strong { font } else { font };
-    let mut galley = painter.layout_no_wrap(text.to_string(), font.clone(), color);
-
-    if galley.size().x > max_width {
-        // Binary search the longest prefix that fits, on character
-        // boundaries so multi-byte text never splits mid-character.
-        let chars: Vec<char> = text.chars().collect();
-        let mut low = 0usize;
-        let mut high = chars.len();
-        while low < high {
-            let mid = (low + high + 1) / 2;
-            let candidate: String = chars[..mid].iter().collect::<String>() + "\u{2026}";
-            let width = painter.layout_no_wrap(candidate, font.clone(), color).size().x;
-            if width <= max_width {
-                low = mid;
-            } else {
-                high = mid - 1;
-            }
-        }
-        let truncated: String = chars[..low].iter().collect::<String>() + "\u{2026}";
-        galley = painter.layout_no_wrap(truncated, font, color);
-    }
-    painter.galley(position, galley, color);
 }
