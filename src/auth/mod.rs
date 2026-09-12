@@ -57,7 +57,7 @@ impl TokenStore {
         }
 
         let Some(refresh_token) = secrets::get(SecretKind::RefreshToken, account.id)? else {
-            bail!("{} is not signed in; use Accounts \u{2192} Sign in", account.email);
+            bail!("{} is not signed in; use Accounts \u{203A} Sign in", account.email);
         };
 
         let creds = client_credentials(account);

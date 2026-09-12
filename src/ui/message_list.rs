@@ -320,7 +320,7 @@ fn draw_row(
         painter.text(
             pos2(right - 4.0, rect.bottom() - 8.0),
             Align2::RIGHT_BOTTOM,
-            "\u{1F4CE}",
+            super::icons::ATTACHMENT,
             font(size * 0.8),
             weak,
         );
@@ -330,7 +330,7 @@ fn draw_row(
     painter.text(
         pos2(rect.right() - 18.0, rect.top() + metrics.sender_y),
         Align2::CENTER_TOP,
-        if starred { "\u{2605}" } else { "\u{2606}" },
+        if starred { super::icons::STAR_FILLED } else { super::icons::STAR_HOLLOW },
         font(size * 0.95),
         if starred { Color32::from_rgb(230, 180, 60) } else { weak.gamma_multiply(0.6) },
     );

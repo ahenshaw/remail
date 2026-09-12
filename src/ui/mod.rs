@@ -8,6 +8,7 @@
 pub mod accounts;
 pub mod compose;
 pub mod fonts;
+pub mod icons;
 pub mod images;
 pub mod message_list;
 pub mod reader;

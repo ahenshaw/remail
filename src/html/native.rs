@@ -386,7 +386,7 @@ fn draw_image(
 /// layout does not silently lose content.
 fn draw_image_placeholder(ui: &mut Ui, alt: &str, options: &RenderOptions) {
     let label = if alt.trim().is_empty() { "image" } else { alt };
-    let text = format!("\u{1F5BC} {label}");
+    let text = format!("{} {label}", crate::ui::icons::IMAGE);
     let font = FontId::proportional(options.base_size * 0.85);
     let galley = ui.painter().layout_no_wrap(
         text,

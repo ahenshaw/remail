@@ -210,11 +210,7 @@ impl Builder {
                         marker
                     }
                     // Alternate the bullet by depth, as browsers do.
-                    _ => match depth % 3 {
-                        0 => "\u{2022}".to_string(),
-                        1 => "\u{25e6}".to_string(),
-                        _ => "\u{25aa}".to_string(),
-                    },
+                    _ => crate::ui::icons::BULLETS[depth as usize % 3].to_string(),
                 };
                 self.list_item = Some((depth, marker));
                 self.walk_children(&element.children, style, link);
@@ -501,6 +497,12 @@ fn collapse_whitespace(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     let mut in_space = false;
     for ch in input.chars() {
+        // Invisible formatting characters carry no meaning for this renderer
+        // and have no glyph, so they would draw as boxes. Marketing mail uses
+        // them by the hundred to pad preheaders.
+        if is_invisible(ch) {
+            continue;
+        }
         if ch.is_whitespace() && ch != '\u{a0}' {
             in_space = true;
             continue;
@@ -519,6 +521,17 @@ fn collapse_whitespace(input: &str) -> String {
         out.push(' ');
     }
     out
+}
+
+/// Zero-width and formatting characters, which have no glyph to draw.
+fn is_invisible(ch: char) -> bool {
+    matches!(ch,
+        '\u{034f}'            // combining grapheme joiner
+        | '\u{200b}'..='\u{200f}' // zero-width spaces, joiners, bidi marks
+        | '\u{2028}'..='\u{202e}' // line/paragraph separators, bidi overrides
+        | '\u{2060}'..='\u{2064}' // word joiner, invisible operators
+        | '\u{feff}'              // byte order mark
+    )
 }
 
 fn inline_is_blank(inline: &Inline) -> bool {
@@ -656,6 +669,16 @@ mod tests {
     fn collapses_runs_of_whitespace() {
         assert_eq!(collapse_whitespace("  a   b \n c "), " a b c ");
         assert_eq!(collapse_whitespace("a\u{a0}b"), "a\u{a0}b");
+    }
+
+    #[test]
+    fn drops_characters_that_have_no_glyph() {
+        // Preheader padding: joiners and zero-width spaces would draw as
+        // boxes, since the bundled fonts have no glyph for them.
+        assert_eq!(collapse_whitespace("a\u{200c}\u{034f}b"), "ab");
+        assert_eq!(collapse_whitespace("\u{feff}text"), "text");
+        // A soft hyphen does have a glyph and is left alone.
+        assert!(collapse_whitespace("a\u{ad}b").contains('\u{ad}'));
     }
 
     #[test]

@@ -1187,6 +1187,7 @@ impl eframe::App for RemailApp {
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+
         let mut action = None;
 
         // The folder list recedes onto the app surface; the messages and

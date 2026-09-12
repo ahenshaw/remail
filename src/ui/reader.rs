@@ -230,8 +230,7 @@ fn header(
             }
             if ui
                 .add(
-                    // The icon font has no printer; the emoji font does.
-                    Button::new("\u{1F5A8} Print")
+                    Button::new(format!("{} Print", super::icons::PRINTER))
                         .size(ButtonSize::Small)
                         .outline(),
                 )

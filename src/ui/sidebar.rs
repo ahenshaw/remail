@@ -168,11 +168,14 @@ fn account_header(
     let painter = ui.painter();
     let baseline = rect.top() + (row_height - font.size) * 0.5 - 1.0;
 
-    painter.text(
-        pos2(rect.left() + 4.0, rect.center().y),
-        Align2::LEFT_CENTER,
-        if view.expanded { "\u{25be}" } else { "\u{25b8}" },
-        FontId::proportional(font.size * 0.8),
+    // Drawn rather than set: neither small triangle has a glyph in the
+    // bundled fonts, and a disclosure arrow that renders as a box is worse
+    // than no arrow at all.
+    disclosure_arrow(
+        painter,
+        pos2(rect.left() + 9.0, rect.center().y),
+        font.size * 0.30,
+        view.expanded,
         visuals.weak_text_color(),
     );
     painter.circle_filled(
@@ -300,6 +303,30 @@ fn icon_color(special: SpecialUse, palette: &elegance::Palette) -> Color32 {
             Color32::from_rgb(0xdc, 0xb9, 0x77),
         ),
     }
+}
+
+/// A filled triangle pointing down when expanded, right when collapsed.
+fn disclosure_arrow(
+    painter: &egui::Painter,
+    center: egui::Pos2,
+    radius: f32,
+    expanded: bool,
+    color: Color32,
+) {
+    let points = if expanded {
+        vec![
+            pos2(center.x - radius, center.y - radius * 0.6),
+            pos2(center.x + radius, center.y - radius * 0.6),
+            pos2(center.x, center.y + radius * 0.8),
+        ]
+    } else {
+        vec![
+            pos2(center.x - radius * 0.6, center.y - radius),
+            pos2(center.x - radius * 0.6, center.y + radius),
+            pos2(center.x + radius * 0.8, center.y),
+        ]
+    };
+    painter.add(egui::Shape::convex_polygon(points, color, egui::Stroke::NONE));
 }
 
 fn connection_color(state: ConnectionState) -> Color32 {

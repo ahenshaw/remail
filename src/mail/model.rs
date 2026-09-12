@@ -183,7 +183,7 @@ impl SpecialUse {
             SpecialUse::Trash => "\u{1F5D1}",
             SpecialUse::Junk => "\u{26A0}",
             SpecialUse::Archive => "\u{1F4E6}",
-            SpecialUse::All => "\u{1F5C2}",
+            SpecialUse::All => "\u{1F4E7}",
             SpecialUse::Normal => "\u{1F4C1}",
         }
     }
