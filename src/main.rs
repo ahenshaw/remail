@@ -10,13 +10,22 @@ mod ui;
 
 use anyhow::{Context as _, Result};
 
+/// Directives applied when `REMAIL_LOG` is unset.
+///
+/// Other crates' warnings are worth seeing, so the default level is `warn`.
+/// fontdb is the exception: it logs once per font file it cannot read, on
+/// every startup, which says nothing the user can act on from inside the
+/// application. The outcome that would matter — no fonts found at all — is
+/// reported by `FontLibrary` itself.
+const DEFAULT_LOG: &str = "remail=info,warn,fontdb=error";
+
+fn log_filter() -> tracing_subscriber::EnvFilter {
+    tracing_subscriber::EnvFilter::try_from_env("REMAIL_LOG")
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(DEFAULT_LOG))
+}
+
 fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_env("REMAIL_LOG")
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("remail=info,warn")),
-        )
-        .init();
+    tracing_subscriber::fmt().with_env_filter(log_filter()).init();
 
     let config = config::Config::load().unwrap_or_else(|e| {
         tracing::warn!("could not read configuration, starting with defaults: {e}");
@@ -55,4 +64,31 @@ fn main() -> Result<()> {
         }),
     )
     .map_err(|e| anyhow::anyhow!("could not start the window: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_log_directives_are_well_formed() {
+        // A malformed directive is dropped silently, so the filter is only
+        // as good as this check.
+        let rendered = tracing_subscriber::EnvFilter::new(DEFAULT_LOG).to_string();
+        for directive in DEFAULT_LOG.split(',') {
+            assert!(
+                rendered.contains(directive),
+                "directive {directive:?} did not survive parsing: {rendered}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_environment_overrides_the_default() {
+        // SAFETY: single-threaded test setting a variable it also removes.
+        unsafe { std::env::set_var("REMAIL_LOG", "remail=trace") };
+        assert!(log_filter().to_string().contains("remail=trace"));
+        unsafe { std::env::remove_var("REMAIL_LOG") };
+        assert!(log_filter().to_string().contains("fontdb=error"));
+    }
 }

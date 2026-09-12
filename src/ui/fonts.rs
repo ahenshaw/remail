@@ -40,7 +40,16 @@ impl FontLibrary {
         families.sort_by_key(|name| name.to_lowercase());
         families.dedup();
 
-        tracing::debug!("found {} font families", families.len());
+        // fontdb logs each file it cannot read; those are suppressed by
+        // default because they are not actionable. Finding nothing at all is,
+        // so say so once.
+        if families.is_empty() {
+            tracing::warn!(
+                "no system fonts found; only the built-in faces will be offered"
+            );
+        } else {
+            tracing::debug!("found {} font families", families.len());
+        }
 
         Self {
             db,
