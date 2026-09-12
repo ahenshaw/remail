@@ -887,20 +887,6 @@ struct PendingToast {
     tone: BadgeTone,
 }
 
-/// Whether a view draws on more than one mailbox. Only then does labelling
-/// each row with its folder tell the reader anything.
-fn spans_mailboxes(view: &[Envelope]) -> bool {
-    let mut seen: Option<&str> = None;
-    for envelope in view {
-        match seen {
-            Some(first) if first != envelope.mailbox => return true,
-            Some(_) => {}
-            None => seen = Some(&envelope.mailbox),
-        }
-    }
-    false
-}
-
 /// Builds row keys for a set of UIDs that all live in one mailbox.
 fn row_keys(mailbox: &str, uids: &[u32]) -> Vec<RowKey> {
     uids.iter().map(|uid| RowKey::new(mailbox, *uid)).collect()
@@ -995,16 +981,6 @@ mod tests {
 
     fn keys(mailbox: &str, uids: &[u32]) -> Vec<RowKey> {
         uids.iter().map(|uid| RowKey::new(mailbox, *uid)).collect()
-    }
-
-    #[test]
-    fn only_labels_folders_when_the_view_spans_them() {
-        assert!(!spans_mailboxes(&in_mailbox("INBOX", &[1, 2, 3])));
-        assert!(!spans_mailboxes(&[]));
-
-        let mut mixed = in_mailbox("INBOX", &[1]);
-        mixed.extend(in_mailbox("Archive", &[2]));
-        assert!(spans_mailboxes(&mixed));
     }
 
     #[test]
@@ -1434,7 +1410,9 @@ impl RemailApp {
                 cursor: self.cursor.clone(),
                 selection: &self.selection,
                 compact,
-                show_folder: spans_mailboxes(&visible),
+                // Always while searching: the whole point of a result is
+                // that it came from somewhere you were not looking.
+                show_folder: self.search_results.is_some(),
                 theme: &self.theme,
                 font,
                 surface,

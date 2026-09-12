@@ -96,9 +96,15 @@ impl RowKey {
 pub struct Envelope {
     pub uid: u32,
     /// Mailbox this message lives in. Set on every envelope so search
-    /// results spanning folders stay unambiguous.
+    /// results spanning folders stay unambiguous, and used as the target of
+    /// every server operation on the row.
     #[serde(default)]
     pub mailbox: String,
+    /// Where to *tell the user* the message lives, when that differs from
+    /// `mailbox`. Gmail searches run against All Mail, which is a union of
+    /// every label rather than a place, so the labels are shown instead.
+    #[serde(default, skip)]
+    pub folder_hint: String,
     pub subject: String,
     pub from: Vec<Addr>,
     pub to: Vec<Addr>,
@@ -115,6 +121,17 @@ pub struct Envelope {
 }
 
 impl Envelope {
+    /// The folder to display for this row.
+    pub fn folder_label(&self) -> &str {
+        if !self.folder_hint.is_empty() {
+            return &self.folder_hint;
+        }
+        match self.mailbox.rsplit(['/', '.']).next() {
+            Some(leaf) if !leaf.is_empty() => leaf,
+            _ => &self.mailbox,
+        }
+    }
+
     pub fn key(&self) -> RowKey {
         RowKey::new(self.mailbox.clone(), self.uid)
     }
@@ -350,6 +367,22 @@ mod tests {
             delimiter: Some("/".to_string()),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn shows_the_mailbox_leaf_when_there_is_no_hint() {
+        let envelope = Envelope { mailbox: "Maverick/HR".into(), ..Default::default() };
+        assert_eq!(envelope.folder_label(), "HR");
+    }
+
+    #[test]
+    fn a_hint_wins_over_the_mailbox() {
+        let envelope = Envelope {
+            mailbox: "[Gmail]/All Mail".into(),
+            folder_hint: "Receipts".into(),
+            ..Default::default()
+        };
+        assert_eq!(envelope.folder_label(), "Receipts");
     }
 
     #[test]

@@ -304,6 +304,8 @@ impl Store {
             Ok(Envelope {
                 uid: r.get(0)?,
                 mailbox: mailbox.to_string(),
+                // Display-only and derived from a live fetch, so not cached.
+                folder_hint: String::new(),
                 subject: r.get(1)?,
                 from: parse_addrs(r.get::<_, String>(2)?),
                 to: parse_addrs(r.get::<_, String>(3)?),

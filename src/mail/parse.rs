@@ -91,6 +91,7 @@ fn envelope_from_message(uid: u32, msg: &Message<'_>) -> Envelope {
         uid,
         // Filled in by whoever knows which mailbox this came from.
         mailbox: String::new(),
+        folder_hint: String::new(),
         subject: msg.subject().unwrap_or_default().to_string(),
         from: addrs(msg.from()),
         to: addrs(msg.to()),

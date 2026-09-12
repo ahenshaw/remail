@@ -216,13 +216,15 @@ fn draw_row(
     );
 
     if input.compact {
-        // One line: sender, then subject sharing the row.
+        // One line: sender, then subject sharing the row. There is no preview
+        // line to hang a folder chip from, so the folder is appended to the
+        // subject instead.
         let subject_left = text_left + first_line_width * 0.32;
         let _ = paint_truncated(
             painter,
             pos2(subject_left, rect.top() + 6.0),
             (right - date_width - subject_left).max(40.0),
-            display_subject(envelope),
+            &compact_subject(envelope, input.show_folder),
             font(size * 0.95),
             subject_color,
         );
@@ -237,17 +239,21 @@ fn draw_row(
         );
 
         let mut preview_left = text_left;
-        if input.show_folder && !envelope.mailbox.is_empty() {
-            let leaf = envelope
-                .mailbox
-                .rsplit(['/', '.'])
-                .next()
-                .unwrap_or(&envelope.mailbox);
+        let folder = envelope.folder_label();
+        if input.show_folder && !folder.is_empty() {
+            // A filled chip rather than tinted text: this is the answer to
+            // "where did this come from", so it should not read as part of
+            // the preview line running alongside it.
             let galley =
-                painter.layout_no_wrap(leaf.to_string(), font(size * 0.74), palette.blue);
-            let width = galley.size().x;
-            painter.galley(pos2(preview_left, rect.top() + size * 2.66), galley, palette.blue);
-            preview_left += width + 8.0;
+                painter.layout_no_wrap(folder.to_string(), font(size * 0.72), palette.blue);
+            let padding = Vec2::new(5.0, 1.5);
+            let chip = Rect::from_min_size(
+                pos2(preview_left, rect.top() + size * 2.5),
+                galley.size() + padding * 2.0,
+            );
+            painter.rect_filled(chip, 3.0, super::accent_tint(palette, 0.86));
+            painter.galley(chip.min + padding, galley, palette.blue);
+            preview_left = chip.right() + 7.0;
         }
 
         if !envelope.preview.is_empty() {
@@ -280,6 +286,17 @@ fn draw_row(
         font(size * 0.95),
         if starred { Color32::from_rgb(230, 180, 60) } else { weak.gamma_multiply(0.6) },
     );
+}
+
+/// Subject for a compact row, with the folder appended while searching.
+fn compact_subject(envelope: &Envelope, show_folder: bool) -> String {
+    let subject = display_subject(envelope);
+    let folder = envelope.folder_label();
+    if show_folder && !folder.is_empty() {
+        format!("{subject}  \u{2014} {folder}")
+    } else {
+        subject.to_string()
+    }
 }
 
 fn display_subject(envelope: &Envelope) -> &str {

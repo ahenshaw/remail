@@ -182,7 +182,11 @@ impl ImapConnection {
 
     /// Fetches envelopes for a UID range such as `"1000:*"`.
     pub async fn fetch_envelopes(&mut self, range: &str) -> Result<Vec<Envelope>> {
-        let query = format!("(UID FLAGS RFC822.SIZE {ENVELOPE_HEADERS})");
+        // Gmail's labels say where a message actually lives, which the
+        // mailbox cannot when the search ran against All Mail.
+        let labels = if self.supports_gmail_labels() { " X-GM-LABELS" } else { "" };
+        let query = format!("(UID FLAGS RFC822.SIZE{labels} {ENVELOPE_HEADERS})");
+
         let fetches: Vec<Fetch> = self
             .session
             .uid_fetch(range, query)
@@ -196,6 +200,11 @@ impl ImapConnection {
             .iter()
             .filter_map(|fetch| envelope_from_fetch(fetch, &mailbox))
             .collect())
+    }
+
+    /// Whether the server implements Gmail's IMAP extensions.
+    pub fn supports_gmail_labels(&self) -> bool {
+        self.has_capability("X-GM-EXT-1")
     }
 
     /// Fetches only UIDs and flags, used to reconcile reads and stars made in
@@ -482,12 +491,58 @@ fn envelope_from_fetch(fetch: &Fetch, mailbox: &str) -> Option<Envelope> {
     // The header block alone cannot show attachments; a multipart container is
     // the best signal available until the body is fetched.
     envelope.has_attachments = header_suggests_attachments(header);
+    if let Some(labels) = fetch.gmail_labels() {
+        envelope.folder_hint = gmail_folder(labels.iter().map(|l| l.as_ref()));
+    }
     if envelope.date == 0 {
         if let Some(internal) = fetch.internal_date() {
             envelope.date = internal.timestamp();
         }
     }
     Some(envelope)
+}
+
+/// Picks the label to show for a Gmail message.
+///
+/// Gmail exposes labels rather than folders, and a message usually carries
+/// several: system markers such as `\\Important` or `\\Starred` that say
+/// nothing about where it lives, plus the user's own. A user label is the
+/// most informative, so it wins; otherwise the system label that does denote
+/// a place is used.
+fn gmail_folder<'a>(labels: impl Iterator<Item = &'a str>) -> String {
+    let mut system: Option<String> = None;
+
+    for label in labels {
+        let label = label.trim().trim_matches('"');
+        if label.is_empty() {
+            continue;
+        }
+
+        // System labels arrive backslash-prefixed, and the escaping survives
+        // parsing unevenly: the same label can reach us as `\Inbox` or
+        // `\\Inbox`. Strip whatever is there rather than a fixed count.
+        let marker = label.trim_start_matches('\\');
+        if marker.len() == label.len() {
+            // A user label. Gmail nests with '/', and the leaf is enough.
+            return marker.rsplit('/').next().unwrap_or(marker).to_string();
+        }
+        // Markers that are states, not places.
+        if matches!(marker, "Important" | "Starred" | "Unread" | "Muted") {
+            continue;
+        }
+        if system.is_none() {
+            system = Some(match marker {
+                "Inbox" => "Inbox".to_string(),
+                "Sent" => "Sent".to_string(),
+                "Draft" | "Drafts" => "Drafts".to_string(),
+                "Trash" => "Trash".to_string(),
+                "Junk" | "Spam" => "Spam".to_string(),
+                "All" | "AllMail" => "All Mail".to_string(),
+                other => other.to_string(),
+            });
+        }
+    }
+    system.unwrap_or_default()
 }
 
 fn header_suggests_attachments(header: &[u8]) -> bool {
@@ -660,6 +715,49 @@ mod tests {
         }
     }
 
+    /// Fetches a few envelopes from the account's All Mail and prints where
+    /// each one reports living. Verifies the `X-GM-LABELS` path, which no
+    /// offline test can reach.
+    #[tokio::test]
+    #[ignore = "requires a signed-in account"]
+    async fn prints_gmail_folder_hints() {
+        let config = crate::config::Config::load().expect("config");
+        let Some(account) = config.accounts.iter().find(|a| a.enabled) else {
+            println!("no account configured");
+            return;
+        };
+        let tokens = crate::auth::TokenStore::new();
+        let Ok(credential) = tokens.credential(account).await else {
+            println!("account is not signed in");
+            return;
+        };
+
+        let mut connection = ImapConnection::connect(account, &credential).await.expect("connect");
+        println!("X-GM-EXT-1 supported: {}", connection.supports_gmail_labels());
+
+        let mailboxes = connection.list_mailboxes().await.expect("list");
+        let all = mailboxes
+            .iter()
+            .find(|m| m.special == SpecialUse::All)
+            .map(|m| m.name.clone())
+            .expect("an All Mail mailbox");
+
+        let selected = connection.select(&all).await.expect("select");
+        let range = recent_range(selected.uid_next, 400);
+        let envelopes = connection.fetch_envelopes(&range).await.expect("fetch");
+
+        let mut counts: std::collections::BTreeMap<String, usize> = Default::default();
+        for envelope in &envelopes {
+            *counts.entry(envelope.folder_label().to_string()).or_default() += 1;
+        }
+        println!("{} messages, folders shown:", envelopes.len());
+        for (folder, count) in counts {
+            let shown = if folder.is_empty() { "(none)" } else { &folder };
+            println!("  {shown:<22}{count}");
+        }
+        connection.logout().await;
+    }
+
     /// Exercises TCP, TLS, the greeting and `LOGIN` against a real server.
     /// Ignored by default because it needs the network; run with
     /// `cargo test -- --ignored`.
@@ -711,6 +809,38 @@ mod tests {
         classify(&mut boxes, false);
         assert_eq!(boxes[0].special, SpecialUse::Sent);
         assert_eq!(boxes[1].special, SpecialUse::Trash);
+    }
+
+    #[test]
+    fn prefers_a_user_label_over_a_system_one() {
+        let labels = ["\\Inbox", "\\Important", "Receipts"];
+        assert_eq!(gmail_folder(labels.into_iter()), "Receipts");
+    }
+
+    #[test]
+    fn falls_back_to_a_system_label_that_denotes_a_place() {
+        assert_eq!(gmail_folder(["\\Important", "\\Sent"].into_iter()), "Sent");
+        assert_eq!(gmail_folder(["\\Inbox"].into_iter()), "Inbox");
+    }
+
+    #[test]
+    fn reads_system_labels_however_they_are_escaped() {
+        // Both forms reach us depending on how the response was parsed.
+        assert_eq!(gmail_folder(["\\Inbox"].into_iter()), "Inbox");
+        assert_eq!(gmail_folder(["\\\\Inbox"].into_iter()), "Inbox");
+        assert_eq!(gmail_folder(["\\\\Important", "\\\\Sent"].into_iter()), "Sent");
+    }
+
+    #[test]
+    fn ignores_labels_that_are_states_rather_than_places() {
+        assert_eq!(gmail_folder(["\\Starred", "\\Important"].into_iter()), "");
+        assert_eq!(gmail_folder(["\\\\Starred"].into_iter()), "");
+        assert_eq!(gmail_folder([].into_iter()), "");
+    }
+
+    #[test]
+    fn takes_the_leaf_of_a_nested_user_label() {
+        assert_eq!(gmail_folder(["Maverick/HR"].into_iter()), "HR");
     }
 
     #[test]
