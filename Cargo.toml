@@ -1,0 +1,50 @@
+[package]
+name = "remail"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = []
+# Renders message bodies with the Servo web engine. Heavy: pulls in
+# SpiderMonkey and takes roughly an hour to build the first time.
+servo = ["dep:servo", "dep:dpi", "dep:euclid", "dep:webrender_api"]
+
+[dependencies]
+dpi = { version = "0.1", optional = true }
+euclid = { version = "0.22", optional = true }
+servo = { version = "0.5", optional = true }
+webrender_api = { version = "0.70", optional = true }
+ammonia = "4"
+anyhow = "1"
+async-imap = { version = "0.11", default-features = false, features = ["runtime-tokio"] }
+base64 = "0.23"
+chrono = "0.4"
+directories = "6"
+eframe = "0.36"
+egui = "0.36"
+egui-elegance = "0.16"
+egui_extras = "0.36"
+futures = "0.3"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif"] }
+keyring = "4"
+lettre = { version = "0.11", default-features = false, features = ["builder", "smtp-transport", "pool", "tokio1", "tokio1-rustls-tls", "hostname"] }
+mail-parser = "0.11"
+open = "5"
+percent-encoding = "2"
+rand = "0.10"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots", "json", "http2"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+rustls-pki-types = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.11"
+thiserror = "2"
+tiny_http = "0.12"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util", "fs"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
+toml = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+url = "2"
+webpki-roots = "1"
+rusqlite = { version = "0.38", features = ["bundled"] }
