@@ -38,6 +38,40 @@ There is nothing to configure and no optional feature to pick. On Linux the
 usual `eframe` libraries are needed at link time: `libxcb-render`,
 `libxcb-shape`, `libxcb-xfixes`, `libxkbcommon` and GL headers.
 
+## Installing
+
+Prebuilt packages for each tagged version are on the
+[releases page](https://github.com/ahenshaw/remail/releases): a `.deb` for
+Debian and Ubuntu, and an installer for Windows.
+
+To build and install from source instead:
+
+```sh
+cargo build --release
+
+# Debian, Ubuntu: a package, with dependencies and a man page
+./packaging/linux/build-deb.sh
+sudo dpkg -i dist/remail_*.deb
+
+# Anywhere else: straight into ~/.local, no root needed
+./packaging/linux/install.sh
+```
+
+Both put the desktop entry and the icon where the desktop environment looks
+for them. `install.sh --system` installs to `/usr/local` instead, and
+`install.sh --uninstall` reverses whichever it did.
+
+The Windows installer is built from `packaging/windows/remail.iss` with
+[Inno Setup](https://jrsoftware.org/isinfo.php):
+
+```
+cargo build --release
+iscc packaging\windows\remail.iss
+```
+
+The icons all come from one master, `assets/remail.svg`. Regenerate the PNGs
+and the `.ico` with `./scripts/icons.sh` after editing it.
+
 ## Adding an account
 
 **Any IMAP server** — Accounts → `+ IMAP`, fill in the address and password.

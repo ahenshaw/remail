@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <title>remail</title>
+  <defs>
+    <linearGradient id="ground" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2287d8"/>
+      <stop offset="1" stop-color="#0a5391"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Rounded square, so the mark reads the same in a Windows taskbar and a
+       GNOME dash without either one having to crop it. -->
+  <rect width="512" height="512" rx="108" fill="url(#ground)"/>
+
+  <!-- The letter, sitting proud of the envelope. Manila, matching the folder
+       icons in the sidebar. -->
+  <rect x="156" y="108" width="200" height="132" rx="14" fill="#f2c14e"/>
+  <rect x="186" y="146" width="140" height="14" rx="7" fill="#c8963a"/>
+  <rect x="186" y="180" width="104" height="14" rx="7" fill="#c8963a"/>
+
+  <!-- Envelope body. -->
+  <rect x="80" y="192" width="352" height="212" rx="26" fill="#ffffff"/>
+
+  <!-- Front flap. A shade off white so the fold reads as a shape rather than
+       a hairline, which is what survives being drawn 16 pixels wide. -->
+  <path d="M 80 218 L 256 336 L 432 218 L 432 378 Q 432 404 406 404 L 106 404 Q 80 404 80 378 Z"
+        fill="#dde6f1"/>
+  <path d="M 80 218 L 256 336 L 432 218 L 432 196 L 256 314 L 80 196 Z" fill="#b9c8dc"/>
+</svg>

@@ -1,0 +1,55 @@
+.TH REMAIL 1 "2026-09-12" "remail 0.1.0" "User Commands"
+.SH NAME
+remail \- a fast IMAP and Gmail client
+.SH SYNOPSIS
+.B remail
+.SH DESCRIPTION
+.B remail
+is a desktop email client. It talks to Gmail over OAuth2 and to any IMAP
+server with a password or app password, caches mailboxes, envelopes and
+message bodies in SQLite so that opening a folder paints from cache in the
+same frame, and parks a second connection in
+.B IDLE
+per account so new mail arrives without polling.
+.PP
+It takes no command-line arguments. Accounts are added from
+.B Accounts
+in the application itself.
+.PP
+Message bodies are sanitized before they are drawn: scripts, frames, event
+handlers and
+.B javascript:
+URLs are removed outright, and remote images are withheld until you ask for
+them, because a uniquely named remote image is the standard read receipt.
+.SH ENVIRONMENT
+.TP
+.B REMAIL_LOG
+Tracing filter directives, in the syntax used by
+.BR tracing-subscriber (3).
+When unset, the default is
+.BR "remail=info,warn,fontdb=error" .
+Set
+.B REMAIL_LOG=remail=debug
+to see the IMAP command traffic.
+.SH FILES
+.TP
+.I ~/.config/remail/config.toml
+Accounts, theme, per-pane fonts and pane widths. Written when a setting
+changes.
+.TP
+.I ~/.local/share/remail/cache.sqlite
+Mailbox, envelope and body cache, along with remembered remote-content
+permissions and the addresses used for recipient completion. Safe to delete;
+it is rebuilt from the server.
+.PP
+Passwords and OAuth refresh tokens are not written to either. They are held
+in the platform keyring via
+.BR libsecret (3);
+if no keyring is available, the application says so and asks for the password
+each session.
+.SH SEE ALSO
+Project homepage:
+.UR https://github.com/ahenshaw/remail
+.UE
+.SH AUTHOR
+Andrew Henshaw

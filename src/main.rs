@@ -1,5 +1,9 @@
 //! remail — a fast IMAP and Gmail client.
 
+// Windows would otherwise open a console behind the window. Debug builds keep
+// it, because that is where the tracing output goes.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 mod app;
 mod auth;
 mod config;
@@ -24,6 +28,26 @@ fn log_filter() -> tracing_subscriber::EnvFilter {
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(DEFAULT_LOG))
 }
 
+/// The window icon, decoded from the same PNG the packaging installs.
+///
+/// A missing icon is a cosmetic problem, so a decode failure is logged and
+/// the window opens without one rather than refusing to start.
+fn window_icon() -> Option<std::sync::Arc<egui::IconData>> {
+    const PNG: &[u8] = include_bytes!("../assets/icons/remail-256.png");
+
+    match image::load_from_memory(PNG) {
+        Ok(image) => {
+            let image = image.into_rgba8();
+            let (width, height) = image.dimensions();
+            Some(std::sync::Arc::new(egui::IconData { rgba: image.into_raw(), width, height }))
+        }
+        Err(e) => {
+            tracing::warn!("could not decode the window icon: {e}");
+            None
+        }
+    }
+}
+
 fn main() -> Result<()> {
     tracing_subscriber::fmt().with_env_filter(log_filter()).init();
 
@@ -46,14 +70,18 @@ fn main() -> Result<()> {
     }
     .context("opening the message cache")?;
 
-    let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title("remail")
-            .with_inner_size([1320.0, 860.0])
-            .with_min_inner_size([760.0, 480.0])
-            .with_app_id("remail"),
-        ..Default::default()
-    };
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_title("remail")
+        .with_inner_size([1320.0, 860.0])
+        .with_min_inner_size([760.0, 480.0])
+        // Wayland matches this against the .desktop file's basename to find
+        // the icon; X11 and Windows use the one set below.
+        .with_app_id("remail");
+    if let Some(icon) = window_icon() {
+        viewport = viewport.with_icon(icon);
+    }
+
+    let options = eframe::NativeOptions { viewport, ..Default::default() };
 
     eframe::run_native(
         "remail",

@@ -45,3 +45,14 @@ jobs:
         run: |
           pip install --quiet fonttools
           python3 scripts/glyphs.py
+
+      # Cheap checks on the packaging. Building the .deb and the Windows
+      # installer needs a release build, so that lives in release.yml.
+      - name: Packaging
+        run: |
+          sudo apt-get install --no-install-recommends -y desktop-file-utils
+          desktop-file-validate packaging/linux/remail.desktop
+          bash -n packaging/linux/install.sh
+          bash -n packaging/linux/build-deb.sh
+          bash -n scripts/icons.sh
+          man --warnings -E UTF-8 -l -Tutf8 -Z packaging/linux/remail.1 >/dev/null

@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=remail
+GenericName=Email Client
+Comment=A fast IMAP and Gmail client
+Exec=remail
+Icon=remail
+Terminal=false
+Categories=Network;Email;
+Keywords=email;mail;imap;gmail;
+# eframe sets WM_CLASS from the app id, which matches this file's basename.
+# Without it the window lands in its own taskbar group rather than this one.
+StartupWMClass=remail
