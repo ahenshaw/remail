@@ -70,6 +70,14 @@ dialog says so plainly if none is running.
 the cached listing; pressing `Enter` escalates to a server-side `SEARCH`, which
 reaches messages that were never cached.
 
+The scope selector beside the search box controls how far `Enter` reaches:
+this folder, this folder and everything nested under it, or the whole account.
+Base IMAP has no cross-folder search, so wider scopes select and search each
+mailbox in turn — except on Gmail, where `All Mail` already contains every
+message and one search covers the account. Results from more than one folder
+show which folder each message came from, and acting on them targets the right
+mailbox per row.
+
 ## How it is put together
 
 ```

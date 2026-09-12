@@ -191,7 +191,11 @@ impl ImapConnection {
             .await
             .with_context(|| format!("fetching envelopes for {range}"))?;
 
-        Ok(fetches.iter().filter_map(envelope_from_fetch).collect())
+        let mailbox = self.selected.clone().unwrap_or_default();
+        Ok(fetches
+            .iter()
+            .filter_map(|fetch| envelope_from_fetch(fetch, &mailbox))
+            .collect())
     }
 
     /// Fetches only UIDs and flags, used to reconcile reads and stars made in
@@ -468,10 +472,11 @@ fn guess_special_use(name: &str) -> SpecialUse {
     }
 }
 
-fn envelope_from_fetch(fetch: &Fetch) -> Option<Envelope> {
+fn envelope_from_fetch(fetch: &Fetch, mailbox: &str) -> Option<Envelope> {
     let uid = fetch.uid?;
     let header = fetch.header().unwrap_or(b"");
     let mut envelope = parse::parse_envelope(uid, header);
+    envelope.mailbox = mailbox.to_string();
     envelope.flags = flags_from_fetch(fetch);
     envelope.size = fetch.size.unwrap_or(0);
     // The header block alone cannot show attachments; a multipart container is

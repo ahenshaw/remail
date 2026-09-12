@@ -9,6 +9,7 @@ pub mod store;
 
 pub use engine::{Command, ConnectionState, Engine, Event};
 pub use model::{
-    Addr, Draft, Envelope, Flags, MailboxInfo, MessageBody, MessageKey, SpecialUse,
+    Addr, Draft, Envelope, Flags, MailboxInfo, MessageBody, MessageKey, RowKey, SearchScope,
+    SpecialUse,
 };
 pub use store::Store;

@@ -15,6 +15,7 @@ pub mod sidebar;
 use egui::{Color32, FontFamily, FontId};
 
 use crate::config::{AccountId, PaneFont, PaneStyle};
+use crate::mail::RowKey;
 
 /// Something the user did that the app needs to act on.
 #[derive(Debug, Clone)]
@@ -26,12 +27,12 @@ pub enum Action {
     /// Start the interactive OAuth flow.
     SignIn(AccountId),
     /// Move the keyboard cursor to a message and load it.
-    Focus(u32),
+    Focus(RowKey),
     /// Extend the multi-selection to a message.
-    ToggleSelected(u32),
+    ToggleSelected(RowKey),
     /// Select a contiguous run ending at a message.
-    SelectRange(u32),
-    ToggleStar(u32),
+    SelectRange(RowKey),
+    ToggleStar(RowKey),
     /// Flip `\Seen` on the current selection.
     ToggleRead,
     Archive,

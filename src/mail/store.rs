@@ -303,6 +303,7 @@ impl Store {
         let rows = stmt.query_map(params![account, mailbox, limit], |r| {
             Ok(Envelope {
                 uid: r.get(0)?,
+                mailbox: mailbox.to_string(),
                 subject: r.get(1)?,
                 from: parse_addrs(r.get::<_, String>(2)?),
                 to: parse_addrs(r.get::<_, String>(3)?),

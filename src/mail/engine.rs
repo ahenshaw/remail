@@ -17,12 +17,15 @@ use anyhow::{Context, Result, anyhow, bail};
 use tokio::sync::{Notify, mpsc};
 
 use super::imap::{ImapConnection, IdleOutcome};
-use super::model::{Draft, Envelope, Flags, MailboxInfo, MessageBody, SpecialUse};
+use super::model::{Draft, Envelope, Flags, MailboxInfo, MessageBody, SearchScope, SpecialUse};
 use super::store::{MailboxState, Store};
 use super::{imap, parse, smtp};
 use crate::auth::{Credential, TokenStore, oauth};
 use crate::config::{AccountConfig, AccountId, AuthMethod, Config};
 use crate::secrets::{self, SecretKind};
+
+/// Most results a search returns, across every mailbox it covers.
+const SEARCH_LIMIT: usize = 500;
 
 /// Cap on how many messages one flag-reconciliation pass examines. Keeps the
 /// per-sync cost bounded on mailboxes with a hundred thousand messages.
@@ -47,7 +50,7 @@ pub enum Command {
     /// Move to Trash, or expunge outright if already there.
     Delete { account: AccountId, mailbox: String, uids: Vec<u32> },
     Send { draft: Draft },
-    Search { account: AccountId, mailbox: String, query: String },
+    Search { account: AccountId, mailbox: String, query: String, scope: SearchScope },
     /// Run the interactive OAuth flow for an account.
     SignIn(AccountId),
     SignOut(AccountId),
@@ -440,8 +443,8 @@ impl AccountWorker {
                     return Err(e);
                 }
             }
-            Command::Search { mailbox, query, .. } => {
-                self.search(&mailbox, &query).await?;
+            Command::Search { mailbox, query, scope, .. } => {
+                self.search(&mailbox, &query, scope).await?;
             }
             Command::Send { draft } => {
                 self.send(draft).await?;
@@ -788,37 +791,105 @@ impl AccountWorker {
         }
     }
 
-    async fn search(&mut self, mailbox: &str, query: &str) -> Result<()> {
+    /// Runs a search over one mailbox, its subtree, or the whole account.
+    ///
+    /// Base IMAP has no cross-folder search, so anything wider than one
+    /// mailbox means selecting and searching each in turn. Gmail is the
+    /// exception worth special-casing: its `\All` mailbox already contains
+    /// every message, so a whole-account search is one round trip there
+    /// instead of thirty.
+    async fn search(&mut self, mailbox: &str, query: &str, scope: SearchScope) -> Result<()> {
         let account = self.account;
-        let connection = self.connect().await?;
-        if connection.selected_mailbox() != Some(mailbox) {
-            connection.select(mailbox).await?;
-        }
-        let connection = self.connection.as_mut().expect("connected above");
+        let criteria = imap::text_search(query)?;
+        let targets = self.search_targets(mailbox, scope)?;
 
-        let uids = connection.search(&imap::text_search(query)?).await?;
-        // Bound the result set; a bare term can match tens of thousands.
-        let uids: Vec<u32> = uids.into_iter().take(500).collect();
-        if uids.is_empty() {
-            self.events.emit(Event::SearchResults {
+        let mut results: Vec<Envelope> = Vec::new();
+        let mut searched = 0usize;
+
+        for target in &targets {
+            self.events.status(
                 account,
-                mailbox: mailbox.to_string(),
-                envelopes: Vec::new(),
-            });
-            return Ok(());
+                format!("Searching {target} ({}/{})", searched + 1, targets.len()),
+            );
+
+            let connection = self.connect().await?;
+            if connection.selected_mailbox() != Some(target.as_str()) {
+                // A mailbox can disappear between listing and searching.
+                if connection.select(target).await.is_err() {
+                    continue;
+                }
+            }
+            let connection = self.connection.as_mut().expect("connected above");
+
+            let uids = connection.search(&criteria).await?;
+            searched += 1;
+            if uids.is_empty() {
+                continue;
+            }
+
+            // Bound per mailbox as well as overall; a bare term can match
+            // tens of thousands in a single folder.
+            let uids: Vec<u32> = uids.into_iter().take(SEARCH_LIMIT).collect();
+            let envelopes = connection.fetch_envelopes(&imap::uid_set(&uids)).await?;
+            self.store.save_envelopes(account, target, &envelopes)?;
+            results.extend(envelopes);
+
+            if results.len() >= SEARCH_LIMIT {
+                break;
+            }
         }
 
-        let envelopes = connection.fetch_envelopes(&imap::uid_set(&uids)).await?;
-        self.store.save_envelopes(account, mailbox, &envelopes)?;
+        results.sort_by(|a, b| b.date.cmp(&a.date).then_with(|| b.uid.cmp(&a.uid)));
+        results.truncate(SEARCH_LIMIT);
 
-        let mut envelopes = envelopes;
-        envelopes.sort_by(|a, b| b.date.cmp(&a.date));
         self.events.emit(Event::SearchResults {
             account,
             mailbox: mailbox.to_string(),
-            envelopes,
+            envelopes: results,
         });
         Ok(())
+    }
+
+    /// The mailboxes a search should cover, in the order to visit them.
+    fn search_targets(&self, mailbox: &str, scope: SearchScope) -> Result<Vec<String>> {
+        if scope == SearchScope::Folder {
+            return Ok(vec![mailbox.to_string()]);
+        }
+
+        let mailboxes = self.store.load_mailboxes(self.account)?;
+
+        if scope == SearchScope::All {
+            // Gmail's All Mail is a superset of every other folder, so one
+            // search there covers the account.
+            if let Some(all) = mailboxes.iter().find(|m| m.special == SpecialUse::All) {
+                return Ok(vec![all.name.clone()]);
+            }
+        }
+
+        let mut targets: Vec<String> = mailboxes
+            .into_iter()
+            .filter(|candidate| {
+                if !candidate.selectable {
+                    return false;
+                }
+                match scope {
+                    SearchScope::All => true,
+                    SearchScope::Subtree => {
+                        candidate.name == mailbox || is_descendant(candidate, mailbox)
+                    }
+                    SearchScope::Folder => candidate.name == mailbox,
+                }
+            })
+            .map(|candidate| candidate.name)
+            .collect();
+
+        // Search the mailbox in view first: its results are the ones the user
+        // is most likely waiting for.
+        targets.sort_by_key(|name| (name != mailbox, name.clone()));
+        if targets.is_empty() {
+            targets.push(mailbox.to_string());
+        }
+        Ok(targets)
     }
 
     async fn send(&mut self, draft: Draft) -> Result<()> {
@@ -915,6 +986,14 @@ impl AccountWorker {
             }
         });
     }
+}
+
+/// Whether `candidate` sits underneath `parent` in the folder hierarchy.
+fn is_descendant(candidate: &MailboxInfo, parent: &str) -> bool {
+    let Some(delimiter) = candidate.delimiter.as_deref().filter(|d| !d.is_empty()) else {
+        return false;
+    };
+    candidate.name.starts_with(&format!("{parent}{delimiter}"))
 }
 
 fn plural(count: usize) -> String {

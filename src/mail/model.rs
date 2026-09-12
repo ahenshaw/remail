@@ -74,10 +74,31 @@ impl Addr {
     }
 }
 
+/// Identifies a row in the message list.
+///
+/// A UID is only unique within its mailbox, so any view that can span
+/// mailboxes — a cross-folder search — needs the mailbox as part of the
+/// identity. Using it everywhere keeps one code path.
+#[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct RowKey {
+    pub mailbox: String,
+    pub uid: u32,
+}
+
+impl RowKey {
+    pub fn new(mailbox: impl Into<String>, uid: u32) -> Self {
+        Self { mailbox: mailbox.into(), uid }
+    }
+}
+
 /// Everything the message list needs to draw a row, without the body.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Envelope {
     pub uid: u32,
+    /// Mailbox this message lives in. Set on every envelope so search
+    /// results spanning folders stay unambiguous.
+    #[serde(default)]
+    pub mailbox: String,
     pub subject: String,
     pub from: Vec<Addr>,
     pub to: Vec<Addr>,
@@ -94,6 +115,10 @@ pub struct Envelope {
 }
 
 impl Envelope {
+    pub fn key(&self) -> RowKey {
+        RowKey::new(self.mailbox.clone(), self.uid)
+    }
+
     /// Case-insensitive match across the fields a user expects to search.
     pub fn matches(&self, needle_lower: &str) -> bool {
         if needle_lower.is_empty() {
@@ -280,6 +305,39 @@ pub struct MessageKey {
     pub account: AccountId,
     pub mailbox: String,
     pub uid: u32,
+}
+
+impl MessageKey {
+    pub fn row(&self) -> RowKey {
+        RowKey::new(self.mailbox.clone(), self.uid)
+    }
+}
+
+/// How widely a search reaches.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SearchScope {
+    /// The open mailbox only.
+    #[default]
+    Folder,
+    /// The open mailbox and everything nested under it.
+    Subtree,
+    /// Every selectable mailbox in the account.
+    All,
+}
+
+impl SearchScope {
+    pub fn label(self) -> &'static str {
+        match self {
+            SearchScope::Folder => "This folder",
+            SearchScope::Subtree => "With subfolders",
+            SearchScope::All => "All folders",
+        }
+    }
+
+    pub fn all() -> [SearchScope; 3] {
+        [SearchScope::Folder, SearchScope::Subtree, SearchScope::All]
+    }
 }
 
 #[cfg(test)]

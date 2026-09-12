@@ -10,13 +10,16 @@ use std::ops::Range;
 use egui::{Align2, Color32, FontId, Rect, Sense, Stroke, Ui, Vec2, pos2};
 
 use super::{Action, format_date_short, paint_truncated};
-use crate::mail::{Envelope, Flags};
+use crate::mail::{Envelope, Flags, RowKey};
 
 pub struct ListInput<'a> {
     pub envelopes: &'a [Envelope],
     /// The keyboard-focused message.
-    pub cursor: Option<u32>,
-    pub selection: &'a BTreeSet<u32>,
+    pub cursor: Option<RowKey>,
+    pub selection: &'a BTreeSet<RowKey>,
+    /// Show each row's folder. Set when the view spans mailboxes, where the
+    /// subject alone does not say where a message lives.
+    pub show_folder: bool,
     pub compact: bool,
     pub base_size: f32,
     /// Font family this pane draws in.
@@ -54,7 +57,8 @@ pub fn show(ui: &mut Ui, input: ListInput<'_>) -> ListOutput {
 
     let cursor_index = input
         .cursor
-        .and_then(|uid| input.envelopes.iter().position(|e| e.uid == uid));
+        .as_ref()
+        .and_then(|key| input.envelopes.iter().position(|e| &e.key() == key));
 
     let mut visible = 0..0;
     let scroll = egui::ScrollArea::vertical().auto_shrink([false, false]);
@@ -64,8 +68,9 @@ pub fn show(ui: &mut Ui, input: ListInput<'_>) -> ListOutput {
 
         for index in range {
             let envelope = &input.envelopes[index];
-            let is_cursor = input.cursor == Some(envelope.uid);
-            let is_selected = input.selection.contains(&envelope.uid);
+            let key = envelope.key();
+            let is_cursor = input.cursor.as_ref() == Some(&key);
+            let is_selected = input.selection.contains(&key);
 
             let (rect, response) =
                 ui.allocate_exact_size(Vec2::new(ui.available_width(), row_height), Sense::click());
@@ -85,15 +90,15 @@ pub fn show(ui: &mut Ui, input: ListInput<'_>) -> ListOutput {
                 Sense::click(),
             );
             if star.clicked() {
-                action = Some(Action::ToggleStar(envelope.uid));
+                action = Some(Action::ToggleStar(key.clone()));
             } else if response.clicked() {
                 let modifiers = ui.input(|i| i.modifiers);
                 action = Some(if modifiers.shift {
-                    Action::SelectRange(envelope.uid)
+                    Action::SelectRange(key.clone())
                 } else if modifiers.command {
-                    Action::ToggleSelected(envelope.uid)
+                    Action::ToggleSelected(key.clone())
                 } else {
-                    Action::Focus(envelope.uid)
+                    Action::Focus(key.clone())
                 });
             }
 
@@ -209,11 +214,28 @@ fn draw_row(
             if unread { strong } else { normal },
         );
 
+        let mut preview_left = text_left;
+        if input.show_folder && !envelope.mailbox.is_empty() {
+            let leaf = envelope
+                .mailbox
+                .rsplit(['/', '.'])
+                .next()
+                .unwrap_or(&envelope.mailbox);
+            let galley = painter.layout_no_wrap(
+                leaf.to_string(),
+                font(size * 0.74),
+                visuals.selection.bg_fill,
+            );
+            let width = galley.size().x;
+            painter.galley(pos2(preview_left, rect.top() + size * 2.66), galley, visuals.selection.bg_fill);
+            preview_left += width + 8.0;
+        }
+
         if !envelope.preview.is_empty() {
             let _ = paint_truncated(
                 painter,
-                pos2(text_left, rect.top() + size * 2.6),
-                right - text_left,
+                pos2(preview_left, rect.top() + size * 2.6),
+                right - preview_left,
                 &envelope.preview,
                 font(size * 0.82),
                 weak,

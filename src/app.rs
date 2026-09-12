@@ -19,7 +19,7 @@ use crate::html::Prepared;
 use crate::html::native::TextureCache;
 use crate::mail::{
     Command, ConnectionState, Draft, Engine, Envelope, Event, Flags, MessageBody, MessageKey,
-    SpecialUse, Store,
+    RowKey, SearchScope, SpecialUse, Store,
 };
 use crate::secrets;
 use crate::ui::accounts::{AccountsAction, AccountsDialog};
@@ -56,13 +56,14 @@ pub struct RemailApp {
     open_mailbox: Option<(AccountId, String)>,
     envelopes: Vec<Envelope>,
 
-    cursor: Option<u32>,
-    selection: BTreeSet<u32>,
+    cursor: Option<RowKey>,
+    selection: BTreeSet<RowKey>,
     /// Anchor for shift-click range selection.
-    anchor: Option<u32>,
+    anchor: Option<RowKey>,
     scroll_to_cursor: bool,
 
     search: String,
+    search_scope: SearchScope,
     /// Results of a server-side search, replacing the mailbox listing.
     search_results: Option<Vec<Envelope>>,
 
@@ -123,6 +124,7 @@ impl RemailApp {
             anchor: None,
             scroll_to_cursor: false,
             search: String::new(),
+            search_scope: SearchScope::default(),
             search_results: None,
             open_message: None,
             textures: TextureCache::new(),
@@ -269,25 +271,29 @@ impl RemailApp {
             }
 
             Event::Vanished { account, mailbox, uids } => {
-                if !self.is_open(account, &mailbox) {
+                if !self.is_current_account(account) {
                     return;
                 }
+                let rows = row_keys(&mailbox, &uids);
                 // Usually already gone: this confirms an optimistic removal.
                 // It also covers messages deleted from another client.
-                self.pending_removal.retain(|e| !uids.contains(&e.uid));
-                self.envelopes.retain(|e| !uids.contains(&e.uid));
-                self.selection.retain(|uid| !uids.contains(uid));
-                if self.cursor.is_some_and(|uid| uids.contains(&uid)) {
+                take_rows(&mut self.pending_removal, &rows);
+                take_rows(&mut self.envelopes, &rows);
+                if let Some(results) = &mut self.search_results {
+                    take_rows(results, &rows);
+                }
+                self.selection.retain(|key| !rows.contains(key));
+                if self.cursor.as_ref().is_some_and(|key| rows.contains(key)) {
                     self.cursor = None;
                     self.open_message = None;
                 }
             }
 
             Event::RemovalFailed { account, mailbox, uids } => {
-                if !self.is_open(account, &mailbox) {
+                if !self.is_current_account(account) {
                     return;
                 }
-                self.restore_rows(&uids);
+                self.restore_rows(&row_keys(&mailbox, &uids));
                 self.toast(
                     "Could not remove messages",
                     Some("They have been put back.".into()),
@@ -296,15 +302,21 @@ impl RemailApp {
             }
 
             Event::FlagsChanged { account, mailbox, changes } => {
-                if !self.is_open(account, &mailbox) {
+                if !self.is_current_account(account) {
                     return;
                 }
                 for (uid, flags) in changes {
-                    if let Some(envelope) = self.envelopes.iter_mut().find(|e| e.uid == uid) {
+                    let key = RowKey::new(mailbox.clone(), uid);
+                    for envelope in self.envelopes.iter_mut().filter(|e| e.key() == key) {
                         envelope.flags = flags;
                     }
+                    if let Some(results) = &mut self.search_results {
+                        for envelope in results.iter_mut().filter(|e| e.key() == key) {
+                            envelope.flags = flags;
+                        }
+                    }
                     if let Some(open) = &mut self.open_message {
-                        if open.key.uid == uid {
+                        if open.key.row() == key {
                             open.envelope.flags = flags;
                         }
                     }
@@ -312,12 +324,19 @@ impl RemailApp {
             }
 
             Event::Preview { account, mailbox, uid, preview, has_attachments } => {
-                if !self.is_open(account, &mailbox) {
+                if !self.is_current_account(account) {
                     return;
                 }
-                if let Some(envelope) = self.envelopes.iter_mut().find(|e| e.uid == uid) {
-                    envelope.preview = preview;
+                let key = RowKey::new(mailbox, uid);
+                for envelope in self.envelopes.iter_mut().filter(|e| e.key() == key) {
+                    envelope.preview = preview.clone();
                     envelope.has_attachments = has_attachments;
+                }
+                if let Some(results) = &mut self.search_results {
+                    for envelope in results.iter_mut().filter(|e| e.key() == key) {
+                        envelope.preview = preview.clone();
+                        envelope.has_attachments = has_attachments;
+                    }
                 }
             }
 
@@ -372,6 +391,13 @@ impl RemailApp {
         self.open_mailbox.as_ref().is_some_and(|(a, m)| *a == account && m == mailbox)
     }
 
+    /// Whether an event belongs to the account on screen. Used for events
+    /// that carry their own mailbox and so may legitimately concern a folder
+    /// other than the open one, as cross-folder search results do.
+    fn is_current_account(&self, account: AccountId) -> bool {
+        self.open_mailbox.as_ref().is_some_and(|(a, _)| *a == account)
+    }
+
     /// Newest first, with a stable tiebreak so rows never jitter between
     /// frames when several messages share a timestamp.
     fn sort_envelopes(&mut self) {
@@ -387,29 +413,29 @@ impl RemailApp {
             Action::Connect(account) => self.engine.send(Command::Connect(account)),
             Action::SignIn(account) => self.engine.send(Command::SignIn(account)),
 
-            Action::Focus(uid) => {
-                self.cursor = Some(uid);
-                self.anchor = Some(uid);
+            Action::Focus(key) => {
+                self.cursor = Some(key.clone());
+                self.anchor = Some(key.clone());
                 self.selection.clear();
-                self.selection.insert(uid);
+                self.selection.insert(key);
                 self.open_current();
             }
-            Action::ToggleSelected(uid) => {
-                if !self.selection.remove(&uid) {
-                    self.selection.insert(uid);
+            Action::ToggleSelected(key) => {
+                if !self.selection.remove(&key) {
+                    self.selection.insert(key.clone());
                 }
-                self.cursor = Some(uid);
-                self.anchor = Some(uid);
+                self.cursor = Some(key.clone());
+                self.anchor = Some(key);
             }
-            Action::SelectRange(uid) => self.select_range_to(uid),
+            Action::SelectRange(key) => self.select_range_to(&key),
 
-            Action::ToggleStar(uid) => {
+            Action::ToggleStar(key) => {
                 let starred = self
                     .visible()
                     .iter()
-                    .find(|e| e.uid == uid)
+                    .find(|e| e.key() == key)
                     .is_some_and(|e| e.flags.has(Flags::FLAGGED));
-                self.set_flag(&[uid], Flags::FLAGGED, !starred);
+                self.set_flag(&[key], Flags::FLAGGED, !starred);
             }
             Action::ToggleRead => {
                 let targets = self.targets();
@@ -419,7 +445,7 @@ impl RemailApp {
                 let any_unread = self
                     .visible()
                     .iter()
-                    .filter(|e| targets.contains(&e.uid))
+                    .filter(|e| targets.contains(&e.key()))
                     .any(|e| e.flags.is_unread());
                 self.set_flag(&targets, Flags::SEEN, any_unread);
             }
@@ -438,8 +464,12 @@ impl RemailApp {
 
             Action::SearchServer(query) => {
                 if let Some((account, mailbox)) = self.open_mailbox.clone() {
-                    self.status = format!("Searching for \u{201c}{query}\u{201d}\u{2026}");
-                    self.engine.send(Command::Search { account, mailbox, query });
+                    let scope = self.search_scope;
+                    self.status = format!(
+                        "Searching {} for \u{201c}{query}\u{201d}\u{2026}",
+                        scope.label().to_lowercase()
+                    );
+                    self.engine.send(Command::Search { account, mailbox, query, scope });
                 }
             }
             Action::ClearSearch => {
@@ -494,12 +524,15 @@ impl RemailApp {
 
     /// Loads the body for the cursor row into the reader.
     fn open_current(&mut self) {
-        let Some(uid) = self.cursor else { return };
-        let Some((account, mailbox)) = self.open_mailbox.clone() else { return };
-        let Some(envelope) = self.visible().iter().find(|e| e.uid == uid).cloned() else {
+        let Some(row) = self.cursor.clone() else { return };
+        let Some((account, _)) = self.open_mailbox.clone() else { return };
+        let Some(envelope) = self.visible().iter().find(|e| e.key() == row).cloned() else {
             return;
         };
 
+        // Search results span folders, so the row says where it lives.
+        let mailbox = envelope.mailbox.clone();
+        let uid = envelope.uid;
         let key = MessageKey { account, mailbox: mailbox.clone(), uid };
         if self.open_message.as_ref().is_some_and(|open| open.key == key) {
             return;
@@ -529,57 +562,68 @@ impl RemailApp {
         self.engine.send(Command::FetchBody { account, mailbox, uid });
     }
 
-    fn select_range_to(&mut self, uid: u32) {
+    fn select_range_to(&mut self, key: &RowKey) {
         let visible = self.visible();
-        let Some(end) = visible.iter().position(|e| e.uid == uid) else { return };
+        let Some(end) = visible.iter().position(|e| &e.key() == key) else { return };
         let start = self
             .anchor
-            .and_then(|anchor| visible.iter().position(|e| e.uid == anchor))
+            .as_ref()
+            .and_then(|anchor| visible.iter().position(|e| &e.key() == anchor))
             .unwrap_or(end);
         let (low, high) = if start <= end { (start, end) } else { (end, start) };
 
-        self.selection = visible[low..=high].iter().map(|e| e.uid).collect();
-        self.cursor = Some(uid);
+        self.selection = visible[low..=high].iter().map(Envelope::key).collect();
+        self.cursor = Some(key.clone());
     }
 
     /// The messages an action applies to: the multi-selection if there is one,
     /// otherwise the cursor row.
-    fn targets(&self) -> Vec<u32> {
+    fn targets(&self) -> Vec<RowKey> {
         if self.selection.is_empty() {
-            self.cursor.into_iter().collect()
+            self.cursor.clone().into_iter().collect()
         } else {
-            self.selection.iter().copied().collect()
+            self.selection.iter().cloned().collect()
         }
     }
 
-    fn set_flag(&mut self, uids: &[u32], bit: u16, add: bool) {
-        let Some((account, mailbox)) = self.open_mailbox.clone() else { return };
-        if uids.is_empty() {
+    /// Groups rows by the mailbox they live in, since every server operation
+    /// works against one selected mailbox at a time.
+    fn by_mailbox(rows: &[RowKey]) -> Vec<(String, Vec<u32>)> {
+        let mut grouped: Vec<(String, Vec<u32>)> = Vec::new();
+        for row in rows {
+            match grouped.iter_mut().find(|(mailbox, _)| *mailbox == row.mailbox) {
+                Some((_, uids)) => uids.push(row.uid),
+                None => grouped.push((row.mailbox.clone(), vec![row.uid])),
+            }
+        }
+        grouped
+    }
+
+    fn set_flag(&mut self, rows: &[RowKey], bit: u16, add: bool) {
+        let Some((account, _)) = self.open_mailbox.clone() else { return };
+        if rows.is_empty() {
             return;
         }
 
         // Update locally first; the engine confirms or corrects it.
-        for envelope in self.envelopes.iter_mut().filter(|e| uids.contains(&e.uid)) {
+        for envelope in self.envelopes.iter_mut().filter(|e| rows.contains(&e.key())) {
             envelope.flags.set(bit, add);
         }
         if let Some(results) = &mut self.search_results {
-            for envelope in results.iter_mut().filter(|e| uids.contains(&e.uid)) {
+            for envelope in results.iter_mut().filter(|e| rows.contains(&e.key())) {
                 envelope.flags.set(bit, add);
             }
         }
         if let Some(open) = &mut self.open_message {
-            if uids.contains(&open.key.uid) {
+            if rows.contains(&open.key.row()) {
                 open.envelope.flags.set(bit, add);
             }
         }
 
-        self.engine.send(Command::SetFlag {
-            account,
-            mailbox,
-            uids: uids.to_vec(),
-            bit,
-            add,
-        });
+        // One command per mailbox: a server operates on the selected one.
+        for (mailbox, uids) in Self::by_mailbox(rows) {
+            self.engine.send(Command::SetFlag { account, mailbox, uids, bit, add });
+        }
     }
 
     fn archive(&mut self) {
@@ -600,30 +644,41 @@ impl RemailApp {
             })
             .map(|m| m.name.clone());
 
-        match destination {
-            Some(destination) if destination != mailbox => {
-                self.remove_rows(&targets);
-                self.engine.send(Command::Move {
-                    account,
-                    mailbox,
-                    uids: targets,
-                    destination,
-                });
-            }
-            _ => {
-                self.status = "No archive mailbox on this account".into();
-            }
+        let Some(destination) = destination else {
+            self.status = "No archive mailbox on this account".into();
+            return;
+        };
+
+        // Rows already in the archive have nowhere to go.
+        let movable: Vec<RowKey> =
+            targets.into_iter().filter(|row| row.mailbox != destination).collect();
+        if movable.is_empty() {
+            self.status = "Already archived".into();
+            return;
         }
+
+        self.remove_rows(&movable);
+        for (mailbox, uids) in Self::by_mailbox(&movable) {
+            self.engine.send(Command::Move {
+                account,
+                mailbox,
+                uids,
+                destination: destination.clone(),
+            });
+        }
+        let _ = mailbox;
     }
 
     fn delete(&mut self) {
-        let Some((account, mailbox)) = self.open_mailbox.clone() else { return };
+        let Some((account, _)) = self.open_mailbox.clone() else { return };
         let targets = self.targets();
         if targets.is_empty() {
             return;
         }
         self.remove_rows(&targets);
-        self.engine.send(Command::Delete { account, mailbox, uids: targets });
+        for (mailbox, uids) in Self::by_mailbox(&targets) {
+            self.engine.send(Command::Delete { account, mailbox, uids });
+        }
     }
 
     /// Hides rows immediately and lands the cursor on whatever takes their
@@ -633,23 +688,23 @@ impl RemailApp {
     /// confirmation would move the cursor now and shift the list a moment
     /// later. The rows are kept in `pending_removal` until the server either
     /// confirms (`Vanished`) or refuses (`RemovalFailed`).
-    fn remove_rows(&mut self, uids: &[u32]) {
+    fn remove_rows(&mut self, rows: &[RowKey]) {
         // Where the first removed row sits today: the cursor should land on
         // whichever message slides up into that position.
-        let landing = landing_index(&self.visible(), uids);
+        let landing = landing_index(&self.visible(), rows);
 
-        self.pending_removal.extend(take_rows(&mut self.envelopes, uids));
+        self.pending_removal.extend(take_rows(&mut self.envelopes, rows));
         if let Some(results) = &mut self.search_results {
-            results.retain(|envelope| !uids.contains(&envelope.uid));
+            take_rows(results, rows);
         }
 
         self.selection.clear();
         self.open_message = None;
 
         let visible = self.visible();
-        let next = visible.get(landing).or_else(|| visible.last()).map(|e| e.uid);
-        self.cursor = next;
-        self.anchor = next;
+        let next = visible.get(landing).or_else(|| visible.last()).map(Envelope::key);
+        self.cursor = next.clone();
+        self.anchor = next.clone();
         self.scroll_to_cursor = true;
         if next.is_some() {
             self.open_current();
@@ -657,8 +712,8 @@ impl RemailApp {
     }
 
     /// Puts back rows the server refused to remove.
-    fn restore_rows(&mut self, uids: &[u32]) {
-        let restored = take_rows(&mut self.pending_removal, uids);
+    fn restore_rows(&mut self, rows: &[RowKey]) {
+        let restored = take_rows(&mut self.pending_removal, rows);
         if restored.is_empty() {
             return;
         }
@@ -708,8 +763,8 @@ impl RemailApp {
         self.compose = Some(ComposeState::new(draft));
 
         // Replying implies having read it.
-        let uid = open.key.uid;
-        self.set_flag(&[uid], Flags::ANSWERED, true);
+        let row = open.key.row();
+        self.set_flag(&[row], Flags::ANSWERED, true);
     }
 
     fn start_forward(&mut self) {
@@ -827,6 +882,11 @@ struct PendingToast {
     tone: BadgeTone,
 }
 
+/// Builds row keys for a set of UIDs that all live in one mailbox.
+fn row_keys(mailbox: &str, uids: &[u32]) -> Vec<RowKey> {
+    uids.iter().map(|uid| RowKey::new(mailbox, *uid)).collect()
+}
+
 /// Identifies a message for remembering remote-content permission.
 ///
 /// `Message-ID` is preferred because it survives the message being moved
@@ -842,10 +902,10 @@ fn remote_key(envelope: &Envelope, mailbox: &str) -> String {
 
 /// Splits the rows matching `uids` out of `list` and returns them, preserving
 /// the order of both the kept and the removed rows.
-fn take_rows(list: &mut Vec<Envelope>, uids: &[u32]) -> Vec<Envelope> {
+fn take_rows(list: &mut Vec<Envelope>, rows: &[RowKey]) -> Vec<Envelope> {
     let mut taken = Vec::new();
     list.retain(|envelope| {
-        let removing = uids.contains(&envelope.uid);
+        let removing = rows.contains(&envelope.key());
         if removing {
             taken.push(envelope.clone());
         }
@@ -856,8 +916,8 @@ fn take_rows(list: &mut Vec<Envelope>, uids: &[u32]) -> Vec<Envelope> {
 
 /// The row index the cursor should land on once `uids` are gone: the position
 /// of the first one removed, which is where the next message slides up to.
-fn landing_index(view: &[Envelope], uids: &[u32]) -> usize {
-    view.iter().position(|e| uids.contains(&e.uid)).unwrap_or(0)
+fn landing_index(view: &[Envelope], rows: &[RowKey]) -> usize {
+    view.iter().position(|e| rows.contains(&e.key())).unwrap_or(0)
 }
 
 /// Strips path separators so a sender cannot choose where a file lands.
@@ -895,9 +955,14 @@ mod tests {
     use super::*;
 
     fn list(uids: &[u32]) -> Vec<Envelope> {
+        in_mailbox("INBOX", uids)
+    }
+
+    fn in_mailbox(mailbox: &str, uids: &[u32]) -> Vec<Envelope> {
         uids.iter()
             .map(|uid| Envelope {
                 uid: *uid,
+                mailbox: mailbox.to_string(),
                 // Descending dates, matching the newest-first display order.
                 date: 1_000 - *uid as i64,
                 ..Default::default()
@@ -907,6 +972,43 @@ mod tests {
 
     fn uids(list: &[Envelope]) -> Vec<u32> {
         list.iter().map(|e| e.uid).collect()
+    }
+
+    fn keys(mailbox: &str, uids: &[u32]) -> Vec<RowKey> {
+        uids.iter().map(|uid| RowKey::new(mailbox, *uid)).collect()
+    }
+
+    #[test]
+    fn rows_in_different_mailboxes_are_distinct() {
+        // The reason rows are not keyed by UID alone: a cross-folder search
+        // can put the same UID from two mailboxes in one list.
+        let mut rows = in_mailbox("INBOX", &[7]);
+        rows.extend(in_mailbox("Archive", &[7]));
+
+        let taken = take_rows(&mut rows, &keys("INBOX", &[7]));
+        assert_eq!(taken.len(), 1, "removed more than the requested row");
+        assert_eq!(taken[0].mailbox, "INBOX");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].mailbox, "Archive", "removed the wrong folder's row");
+    }
+
+    #[test]
+    fn groups_rows_by_the_mailbox_they_live_in() {
+        let rows = vec![
+            RowKey::new("INBOX", 1),
+            RowKey::new("Archive", 5),
+            RowKey::new("INBOX", 2),
+        ];
+        let grouped = RemailApp::by_mailbox(&rows);
+        assert_eq!(grouped.len(), 2);
+        // Order follows first appearance, so the visible folder goes first.
+        assert_eq!(grouped[0], ("INBOX".to_string(), vec![1, 2]));
+        assert_eq!(grouped[1], ("Archive".to_string(), vec![5]));
+    }
+
+    #[test]
+    fn grouping_an_empty_selection_yields_nothing() {
+        assert!(RemailApp::by_mailbox(&[]).is_empty());
     }
 
     #[test]
@@ -925,7 +1027,7 @@ mod tests {
     #[test]
     fn takes_rows_out_in_one_pass() {
         let mut rows = list(&[1, 2, 3, 4, 5]);
-        let taken = take_rows(&mut rows, &[2, 4]);
+        let taken = take_rows(&mut rows, &keys("INBOX", &[2, 4]));
         assert_eq!(uids(&rows), vec![1, 3, 5]);
         assert_eq!(uids(&taken), vec![2, 4]);
     }
@@ -933,7 +1035,7 @@ mod tests {
     #[test]
     fn taking_nothing_leaves_the_list_alone() {
         let mut rows = list(&[1, 2, 3]);
-        assert!(take_rows(&mut rows, &[99]).is_empty());
+        assert!(take_rows(&mut rows, &keys("INBOX", &[99])).is_empty());
         assert_eq!(uids(&rows), vec![1, 2, 3]);
     }
 
@@ -942,28 +1044,28 @@ mod tests {
         let rows = list(&[1, 2, 3, 4, 5]);
         // Deleting the third row: the cursor should land on index 2, which
         // after removal holds what was row 4.
-        assert_eq!(landing_index(&rows, &[3]), 2);
+        assert_eq!(landing_index(&rows, &keys("INBOX", &[3])), 2);
         // A multi-selection lands on the topmost removed row.
-        assert_eq!(landing_index(&rows, &[4, 2]), 1);
+        assert_eq!(landing_index(&rows, &keys("INBOX", &[4, 2])), 1);
         // Deleting the first row lands at the top.
-        assert_eq!(landing_index(&rows, &[1]), 0);
+        assert_eq!(landing_index(&rows, &keys("INBOX", &[1])), 0);
     }
 
     #[test]
     fn landing_index_survives_rows_that_are_already_gone() {
         let rows = list(&[1, 2, 3]);
-        assert_eq!(landing_index(&rows, &[42]), 0);
-        assert_eq!(landing_index(&[], &[1]), 0);
+        assert_eq!(landing_index(&rows, &keys("INBOX", &[42])), 0);
+        assert_eq!(landing_index(&[], &keys("INBOX", &[1])), 0);
     }
 
     #[test]
     fn restoring_puts_rows_back_in_date_order() {
         // What `restore_rows` does: take the rows back, append, re-sort.
         let mut rows = list(&[1, 2, 3, 4]);
-        let mut pending = take_rows(&mut rows, &[2, 3]);
+        let mut pending = take_rows(&mut rows, &keys("INBOX", &[2, 3]));
         assert_eq!(uids(&rows), vec![1, 4]);
 
-        let restored = take_rows(&mut pending, &[2, 3]);
+        let restored = take_rows(&mut pending, &keys("INBOX", &[2, 3]));
         rows.extend(restored);
         rows.sort_by(|a, b| b.date.cmp(&a.date).then_with(|| b.uid.cmp(&a.uid)));
 
@@ -1184,11 +1286,33 @@ impl RemailApp {
                 }
 
                 ui.add_space(8.0);
+
+                // Scope applies to the server-side search that Enter runs;
+                // the as-you-type filter always works on what is loaded.
+                let mut scope = self.search_scope;
+                ui.add(
+                    elegance::Select::new("search-scope", &mut scope)
+                        .options(SearchScope::all().map(|s| (s, s.label())))
+                        .width(130.0),
+                )
+                .on_hover_text("How far Enter searches");
+                if scope != self.search_scope {
+                    self.search_scope = scope;
+                    // A narrower or wider scope invalidates what is on screen.
+                    if self.search_results.is_some() && !self.search.trim().is_empty() {
+                        action = Some(Action::SearchServer(self.search.trim().to_string()));
+                    }
+                }
+
                 let search = ui.add(
                     TextInput::new(&mut self.search)
-                        .hint("Search this mailbox")
+                        .hint(match self.search_scope {
+                            SearchScope::Folder => "Search this folder",
+                            SearchScope::Subtree => "Search with subfolders",
+                            SearchScope::All => "Search all folders",
+                        })
                         .compact(true)
-                        .desired_width(240.0),
+                        .desired_width(210.0),
                 );
                 // Enter escalates from the local filter to a server search,
                 // which reaches messages that are not cached locally.
@@ -1235,9 +1359,10 @@ impl RemailApp {
             ui,
             message_list::ListInput {
                 envelopes: &visible,
-                cursor: self.cursor,
+                cursor: self.cursor.clone(),
                 selection: &self.selection,
                 compact,
+                show_folder: self.search_results.is_some(),
                 base_size: font.size,
                 family: font.family.clone(),
                 scroll_to_cursor,
@@ -1409,11 +1534,11 @@ impl RemailApp {
             return;
         }
 
-        let uid = open.key.uid;
+        let row = open.key.row();
         if let Some(open) = &mut self.open_message {
             open.marked_read = true;
         }
-        self.set_flag(&[uid], Flags::SEEN, true);
+        self.set_flag(&[row], Flags::SEEN, true);
     }
 
     fn handle_shortcuts(&mut self, ctx: &Context) {
@@ -1442,8 +1567,8 @@ impl RemailApp {
             } else if input.key_pressed(Key::U) {
                 action = Some(Nav::Act(Action::ToggleRead));
             } else if input.key_pressed(Key::S) {
-                if let Some(uid) = self.cursor {
-                    action = Some(Nav::Act(Action::ToggleStar(uid)));
+                if let Some(key) = self.cursor.clone() {
+                    action = Some(Nav::Act(Action::ToggleStar(key)));
                 }
             } else if input.key_pressed(Key::Delete) || input.key_pressed(Key::Backspace) {
                 action = Some(Nav::Act(Action::Delete));
@@ -1469,7 +1594,8 @@ impl RemailApp {
         }
         let current = self
             .cursor
-            .and_then(|uid| visible.iter().position(|e| e.uid == uid))
+            .as_ref()
+            .and_then(|key| visible.iter().position(|e| &e.key() == key))
             .map(|index| index as isize);
 
         let next = match current {
@@ -1478,11 +1604,11 @@ impl RemailApp {
             None => visible.len() as isize - 1,
         } as usize;
 
-        let uid = visible[next].uid;
-        self.cursor = Some(uid);
-        self.anchor = Some(uid);
+        let key = visible[next].key();
+        self.cursor = Some(key.clone());
+        self.anchor = Some(key.clone());
         self.selection.clear();
-        self.selection.insert(uid);
+        self.selection.insert(key);
         self.scroll_to_cursor = true;
         self.open_current();
     }
