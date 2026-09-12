@@ -882,6 +882,20 @@ struct PendingToast {
     tone: BadgeTone,
 }
 
+/// Whether a view draws on more than one mailbox. Only then does labelling
+/// each row with its folder tell the reader anything.
+fn spans_mailboxes(view: &[Envelope]) -> bool {
+    let mut seen: Option<&str> = None;
+    for envelope in view {
+        match seen {
+            Some(first) if first != envelope.mailbox => return true,
+            Some(_) => {}
+            None => seen = Some(&envelope.mailbox),
+        }
+    }
+    false
+}
+
 /// Builds row keys for a set of UIDs that all live in one mailbox.
 fn row_keys(mailbox: &str, uids: &[u32]) -> Vec<RowKey> {
     uids.iter().map(|uid| RowKey::new(mailbox, *uid)).collect()
@@ -976,6 +990,16 @@ mod tests {
 
     fn keys(mailbox: &str, uids: &[u32]) -> Vec<RowKey> {
         uids.iter().map(|uid| RowKey::new(mailbox, *uid)).collect()
+    }
+
+    #[test]
+    fn only_labels_folders_when_the_view_spans_them() {
+        assert!(!spans_mailboxes(&in_mailbox("INBOX", &[1, 2, 3])));
+        assert!(!spans_mailboxes(&[]));
+
+        let mut mixed = in_mailbox("INBOX", &[1]);
+        mixed.extend(in_mailbox("Archive", &[2]));
+        assert!(spans_mailboxes(&mixed));
     }
 
     #[test]
@@ -1268,6 +1292,9 @@ impl RemailApp {
                 action = Some(Action::ToggleRead);
             }
 
+            // Only simple widgets go in a right-to-left layout. `Select` and
+            // `TextInput` lay out their own internals left-to-right, so they
+            // overlap rather than stack when the parent runs the other way.
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
                     .add(Button::new(glyphs::SETTINGS.to_string()).size(ButtonSize::Small).outline())
@@ -1285,54 +1312,71 @@ impl RemailApp {
                     self.accounts_dialog = Some(AccountsDialog::default());
                 }
 
-                ui.add_space(8.0);
-
-                // Scope applies to the server-side search that Enter runs;
-                // the as-you-type filter always works on what is loaded.
-                let mut scope = self.search_scope;
-                ui.add(
-                    elegance::Select::new("search-scope", &mut scope)
-                        .options(SearchScope::all().map(|s| (s, s.label())))
-                        .width(130.0),
-                )
-                .on_hover_text("How far Enter searches");
-                if scope != self.search_scope {
-                    self.search_scope = scope;
-                    // A narrower or wider scope invalidates what is on screen.
-                    if self.search_results.is_some() && !self.search.trim().is_empty() {
-                        action = Some(Action::SearchServer(self.search.trim().to_string()));
-                    }
-                }
-
-                let search = ui.add(
-                    TextInput::new(&mut self.search)
-                        .hint(match self.search_scope {
-                            SearchScope::Folder => "Search this folder",
-                            SearchScope::Subtree => "Search with subfolders",
-                            SearchScope::All => "Search all folders",
-                        })
-                        .compact(true)
-                        .desired_width(210.0),
-                );
-                // Enter escalates from the local filter to a server search,
-                // which reaches messages that are not cached locally.
-                if search.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                    let query = self.search.trim().to_string();
-                    if !query.is_empty() {
-                        action = Some(Action::SearchServer(query));
-                    }
-                }
-                if self.search_results.is_some()
-                    && ui
-                        .add(Button::new(glyphs::X.to_string()).size(ButtonSize::Small).outline())
-                        .on_hover_text("Clear search results")
-                        .clicked()
-                {
-                    action = Some(Action::ClearSearch);
-                }
+                // The rest of the bar fills what is left, laid out normally.
+                ui.add_space(6.0);
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    action = action.take().or(self.search_bar(ui));
+                });
             });
         });
         ui.add_space(4.0);
+        action
+    }
+
+    /// Scope selector, query box and a button to drop server-side results.
+    fn search_bar(&mut self, ui: &mut egui::Ui) -> Option<Action> {
+        let mut action = None;
+
+        // Scope applies to the server-side search that Enter runs; the
+        // as-you-type filter always works on what is already loaded.
+        let mut scope = self.search_scope;
+        ui.add(
+            elegance::Select::new("search-scope", &mut scope)
+                .options(SearchScope::all().map(|s| (s, s.label())))
+                .width(132.0),
+        )
+        .on_hover_text("How far Enter searches");
+        if scope != self.search_scope {
+            self.search_scope = scope;
+            // A narrower or wider scope invalidates what is on screen.
+            if self.search_results.is_some() && !self.search.trim().is_empty() {
+                action = Some(Action::SearchServer(self.search.trim().to_string()));
+            }
+        }
+
+        let clear_width = if self.search_results.is_some() { 34.0 } else { 0.0 };
+        // Take the space that is actually left rather than a fixed width,
+        // which is what overflowed into the scope selector before.
+        let width = (ui.available_width() - clear_width - 8.0).clamp(90.0, 320.0);
+
+        let search = ui.add(
+            TextInput::new(&mut self.search)
+                .hint(match self.search_scope {
+                    SearchScope::Folder => "Search this folder",
+                    SearchScope::Subtree => "Search with subfolders",
+                    SearchScope::All => "Search all folders",
+                })
+                .compact(true)
+                .desired_width(width),
+        );
+        // Enter escalates from the local filter to a server search, which
+        // reaches messages that are not cached locally.
+        if search.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+            let query = self.search.trim().to_string();
+            if !query.is_empty() {
+                action = Some(Action::SearchServer(query));
+            }
+        }
+
+        if self.search_results.is_some()
+            && ui
+                .add(Button::new(glyphs::X.to_string()).size(ButtonSize::Small).outline())
+                .on_hover_text("Clear search results")
+                .clicked()
+        {
+            action = Some(Action::ClearSearch);
+        }
+
         action
     }
 
@@ -1362,7 +1406,7 @@ impl RemailApp {
                 cursor: self.cursor.clone(),
                 selection: &self.selection,
                 compact,
-                show_folder: self.search_results.is_some(),
+                show_folder: spans_mailboxes(&visible),
                 theme: &self.theme,
                 base_size: font.size,
                 family: font.family.clone(),
@@ -1617,12 +1661,20 @@ impl RemailApp {
     fn status_bar(&mut self, ui: &mut egui::Ui) {
         ui.add_space(2.0);
         ui.horizontal(|ui| {
-            let total = self.envelopes.len();
-            let unread = self.envelopes.iter().filter(|e| e.flags.is_unread()).count();
+            // Count what is actually on screen: while a search is showing,
+            // the mailbox's own total is not what the list is displaying.
+            let (rows, unread) = match &self.search_results {
+                Some(results) => (results, results.iter().filter(|e| e.flags.is_unread()).count()),
+                None => (
+                    &self.envelopes,
+                    self.envelopes.iter().filter(|e| e.flags.is_unread()).count(),
+                ),
+            };
+            let noun = if self.search_results.is_some() { "results" } else { "messages" };
             let counts = if unread > 0 {
-                format!("{total} messages, {unread} unread")
+                format!("{} {noun}, {unread} unread", rows.len())
             } else {
-                format!("{total} messages")
+                format!("{} {noun}", rows.len())
             };
             ui.label(self.theme.faint_text(counts));
 
