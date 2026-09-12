@@ -11,7 +11,7 @@ use elegance::{Accent, Button, ButtonSize, Theme};
 
 use super::{Action, paint_truncated};
 use crate::config::{AccountId, Config};
-use crate::mail::{ConnectionState, MailboxInfo};
+use crate::mail::{ConnectionState, MailboxInfo, SpecialUse};
 
 /// Per-account view state the sidebar needs.
 pub struct AccountView {
@@ -240,7 +240,7 @@ fn mailbox_row(
         Align2::LEFT_CENTER,
         mailbox.special.icon(),
         FontId::proportional(font.size * 0.85),
-        visuals.weak_text_color(),
+        icon_color(mailbox.special, palette),
     );
 
     // Reserve room for the unread badge before laying out the name.
@@ -262,7 +262,7 @@ fn mailbox_row(
         painter,
         pos2(text_left, baseline),
         right - text_left,
-        mailbox.leaf(),
+        mailbox.display_name(),
         FontId::new(font.size, font.family.clone()),
         color,
     );
@@ -273,6 +273,33 @@ fn mailbox_row(
         return response.on_hover_text(&mailbox.name).clicked();
     }
     response.clicked()
+}
+
+/// The colour of a mailbox's icon.
+///
+/// Ordinary folders are manila, as a paper folder is. The well-known ones take
+/// a colour that says what they are at a glance. Accent colours come from the
+/// palette so they track the theme; manila and magenta are not in it and are
+/// given a light and a dark variant, since a single tan cannot carry on both
+/// a white and a near-black background.
+fn icon_color(special: SpecialUse, palette: &elegance::Palette) -> Color32 {
+    let pick = |light: Color32, dark: Color32| if palette.is_dark { dark } else { light };
+
+    match special {
+        SpecialUse::Inbox => palette.blue,
+        SpecialUse::Sent => palette.green,
+        SpecialUse::Junk => palette.red,
+        SpecialUse::Drafts => pick(
+            Color32::from_rgb(0xb5, 0x2d, 0x8f),
+            Color32::from_rgb(0xe2, 0x7d, 0xc6),
+        ),
+        // Deliberately not coloured: deleted mail should not draw the eye.
+        SpecialUse::Trash => palette.text_faint,
+        SpecialUse::Normal | SpecialUse::Archive | SpecialUse::All => pick(
+            Color32::from_rgb(0xc4, 0x92, 0x3d),
+            Color32::from_rgb(0xdc, 0xb9, 0x77),
+        ),
+    }
 }
 
 fn connection_color(state: ConnectionState) -> Color32 {

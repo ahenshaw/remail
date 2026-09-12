@@ -124,12 +124,13 @@ impl Envelope {
     /// The folder to display for this row.
     pub fn folder_label(&self) -> &str {
         if !self.folder_hint.is_empty() {
-            return &self.folder_hint;
+            return display_folder(&self.folder_hint);
         }
-        match self.mailbox.rsplit(['/', '.']).next() {
+        let leaf = match self.mailbox.rsplit(['/', '.']).next() {
             Some(leaf) if !leaf.is_empty() => leaf,
             _ => &self.mailbox,
-        }
+        };
+        display_folder(leaf)
     }
 
     pub fn key(&self) -> RowKey {
@@ -147,6 +148,14 @@ impl Envelope {
             || self.from.iter().any(|a| hit(&a.name) || hit(&a.email))
             || self.to.iter().any(|a| hit(&a.name) || hit(&a.email))
     }
+}
+
+/// Presentable form of a folder name.
+///
+/// `INBOX` is a protocol keyword that IMAP requires be spelled that way on the
+/// wire; shouting it in the sidebar is an implementation detail leaking out.
+pub fn display_folder(name: &str) -> &str {
+    if name.eq_ignore_ascii_case("INBOX") { "Inbox" } else { name }
 }
 
 /// Well-known mailbox roles, resolved from RFC 6154 `SPECIAL-USE` attributes
@@ -213,6 +222,11 @@ impl MailboxInfo {
             Some(d) => self.name.rsplit(d).next().unwrap_or(&self.name),
             None => &self.name,
         }
+    }
+
+    /// The leaf as it should be shown.
+    pub fn display_name(&self) -> &str {
+        display_folder(self.leaf())
     }
 
     /// Paths of this mailbox's ancestors, outermost first. `Maverick/HR`
@@ -367,6 +381,20 @@ mod tests {
             delimiter: Some("/".to_string()),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn spells_inbox_as_a_word() {
+        assert_eq!(display_folder("INBOX"), "Inbox");
+        assert_eq!(display_folder("inbox"), "Inbox");
+        // Only the mailbox of that exact name; a user folder is left alone.
+        assert_eq!(display_folder("Inbox archive"), "Inbox archive");
+        assert_eq!(display_folder("Sent"), "Sent");
+
+        let inbox = MailboxInfo { name: "INBOX".into(), ..Default::default() };
+        assert_eq!(inbox.display_name(), "Inbox");
+        let envelope = Envelope { mailbox: "INBOX".into(), ..Default::default() };
+        assert_eq!(envelope.folder_label(), "Inbox");
     }
 
     #[test]
