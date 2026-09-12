@@ -845,6 +845,45 @@ mod tests {
         connection.logout().await;
     }
 
+    /// Runs a whole-account search the way the engine does and reports where
+    /// the hits are, so a folder being missed shows up as a count rather than
+    /// as a user noticing later.
+    #[tokio::test]
+    #[ignore = "requires a signed-in account"]
+    async fn reports_where_a_search_finds_things() {
+        let term = std::env::var("REMAIL_SEARCH").unwrap_or_else(|_| "brill".to_string());
+
+        let config = crate::config::Config::load().expect("config");
+        let Some(account) = config.accounts.iter().find(|a| a.enabled) else { return };
+        let tokens = crate::auth::TokenStore::new();
+        let Ok(credential) = tokens.credential(account).await else {
+            println!("account is not signed in");
+            return;
+        };
+        let mut connection =
+            ImapConnection::connect(account, &credential).await.expect("connect");
+
+        let mailboxes = connection.list_mailboxes().await.expect("list");
+        let criteria = text_search(&term).expect("criteria");
+
+        // Every selectable mailbox, so the engine's choice can be compared
+        // against the ground truth.
+        println!("searching every mailbox for {term:?}:");
+        let mut total = 0;
+        for mailbox in mailboxes.iter().filter(|m| m.selectable) {
+            if connection.select(&mailbox.name).await.is_err() {
+                continue;
+            }
+            let hits = connection.search(&criteria).await.unwrap_or_default();
+            if !hits.is_empty() {
+                println!("  {:<24}{}", mailbox.name, hits.len());
+                total += hits.len();
+            }
+        }
+        println!("  {:<24}{total}", "TOTAL");
+        connection.logout().await;
+    }
+
     /// Exercises TCP, TLS, the greeting and `LOGIN` against a real server.
     /// Ignored by default because it needs the network; run with
     /// `cargo test -- --ignored`.

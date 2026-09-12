@@ -1004,41 +1004,7 @@ impl AccountWorker {
         if scope == SearchScope::Folder {
             return Ok(vec![mailbox.to_string()]);
         }
-
-        let mailboxes = self.store.load_mailboxes(self.account)?;
-
-        if scope == SearchScope::All {
-            // Gmail's All Mail is a superset of every other folder, so one
-            // search there covers the account.
-            if let Some(all) = mailboxes.iter().find(|m| m.special == SpecialUse::All) {
-                return Ok(vec![all.name.clone()]);
-            }
-        }
-
-        let mut targets: Vec<String> = mailboxes
-            .into_iter()
-            .filter(|candidate| {
-                if !candidate.selectable {
-                    return false;
-                }
-                match scope {
-                    SearchScope::All => true,
-                    SearchScope::Subtree => {
-                        candidate.name == mailbox || is_descendant(candidate, mailbox)
-                    }
-                    SearchScope::Folder => candidate.name == mailbox,
-                }
-            })
-            .map(|candidate| candidate.name)
-            .collect();
-
-        // Search the mailbox in view first: its results are the ones the user
-        // is most likely waiting for.
-        targets.sort_by_key(|name| (name != mailbox, name.clone()));
-        if targets.is_empty() {
-            targets.push(mailbox.to_string());
-        }
-        Ok(targets)
+        Ok(search_targets(&self.store.load_mailboxes(self.account)?, mailbox, scope))
     }
 
     async fn send(&mut self, draft: Draft) -> Result<()> {
@@ -1147,6 +1113,62 @@ impl AccountWorker {
     }
 }
 
+/// The mailboxes a search should cover, in the order to visit them.
+///
+/// An `\All` mailbox stands in for the whole account, which turns a
+/// thirty-round-trip search into one. It is not quite everything, though:
+/// RFC 6154 permits `\All` to omit `\Trash` and `\Junk`, and Gmail does
+/// exactly that, so those two are searched alongside it. Without them a
+/// message in the bin is simply not found, which looks like a broken search
+/// rather than a deliberate omission.
+fn search_targets(
+    mailboxes: &[MailboxInfo],
+    mailbox: &str,
+    scope: SearchScope,
+) -> Vec<String> {
+    let selectable = |candidate: &&MailboxInfo| candidate.selectable;
+
+    if scope == SearchScope::All {
+        if let Some(all) = mailboxes.iter().filter(selectable).find(|candidate| {
+            candidate.special == SpecialUse::All
+        }) {
+            let mut targets = vec![all.name.clone()];
+            targets.extend(
+                mailboxes
+                    .iter()
+                    .filter(selectable)
+                    .filter(|candidate| {
+                        matches!(candidate.special, SpecialUse::Trash | SpecialUse::Junk)
+                    })
+                    .map(|candidate| candidate.name.clone()),
+            );
+            targets.dedup();
+            return targets;
+        }
+    }
+
+    let mut targets: Vec<String> = mailboxes
+        .iter()
+        .filter(selectable)
+        .filter(|candidate| match scope {
+            SearchScope::All => true,
+            SearchScope::Subtree => {
+                candidate.name == mailbox || is_descendant(candidate, mailbox)
+            }
+            SearchScope::Folder => candidate.name == mailbox,
+        })
+        .map(|candidate| candidate.name.clone())
+        .collect();
+
+    // Search the mailbox in view first: its results are the ones the user is
+    // most likely waiting for.
+    targets.sort_by_key(|name| (name != mailbox, name.clone()));
+    if targets.is_empty() {
+        targets.push(mailbox.to_string());
+    }
+    targets
+}
+
 /// Whether `candidate` sits underneath `parent` in the folder hierarchy.
 fn is_descendant(candidate: &MailboxInfo, parent: &str) -> bool {
     let Some(delimiter) = candidate.delimiter.as_deref().filter(|d| !d.is_empty()) else {
@@ -1162,4 +1184,87 @@ fn plural(count: usize) -> String {
 /// Stores a password for an account, used by the account editor.
 pub fn save_password(account: AccountId, password: &str) -> Result<()> {
     secrets::set(SecretKind::Password, account, password)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn mailbox(name: &str, special: SpecialUse) -> MailboxInfo {
+        MailboxInfo {
+            name: name.to_string(),
+            delimiter: Some("/".to_string()),
+            special,
+            selectable: true,
+            unseen: 0,
+        }
+    }
+
+    /// A Gmail account: an All Mail that omits Trash and Spam, plus labels.
+    fn gmail() -> Vec<MailboxInfo> {
+        vec![
+            mailbox("INBOX", SpecialUse::Inbox),
+            mailbox("[Gmail]/All Mail", SpecialUse::All),
+            mailbox("[Gmail]/Trash", SpecialUse::Trash),
+            mailbox("[Gmail]/Spam", SpecialUse::Junk),
+            mailbox("Work", SpecialUse::Normal),
+            mailbox("Work/Reports", SpecialUse::Normal),
+        ]
+    }
+
+    #[test]
+    fn searching_everything_covers_the_bin_and_the_spam() {
+        // All Mail alone would miss them: RFC 6154 lets it, and Gmail does.
+        let targets = search_targets(&gmail(), "INBOX", SearchScope::All);
+        assert_eq!(targets[0], "[Gmail]/All Mail", "the cheap path was not used");
+        assert!(targets.contains(&"[Gmail]/Trash".to_string()), "Trash was skipped");
+        assert!(targets.contains(&"[Gmail]/Spam".to_string()), "Spam was skipped");
+        // Still cheap: three round trips, not one per folder.
+        assert_eq!(targets.len(), 3);
+    }
+
+    #[test]
+    fn without_an_all_mailbox_every_folder_is_searched() {
+        let plain = vec![
+            mailbox("INBOX", SpecialUse::Inbox),
+            mailbox("Archive", SpecialUse::Archive),
+            mailbox("Trash", SpecialUse::Trash),
+        ];
+        let targets = search_targets(&plain, "INBOX", SearchScope::All);
+        assert_eq!(targets.len(), 3);
+        assert_eq!(targets[0], "INBOX", "the open folder should be searched first");
+    }
+
+    #[test]
+    fn a_subtree_covers_the_folder_and_its_children() {
+        let targets = search_targets(&gmail(), "Work", SearchScope::Subtree);
+        assert_eq!(targets, vec!["Work", "Work/Reports"]);
+    }
+
+    #[test]
+    fn a_subtree_of_a_leaf_is_just_that_leaf() {
+        let targets = search_targets(&gmail(), "Work/Reports", SearchScope::Subtree);
+        assert_eq!(targets, vec!["Work/Reports"]);
+    }
+
+    #[test]
+    fn unselectable_containers_are_never_searched() {
+        let mut boxes = gmail();
+        boxes.push(MailboxInfo {
+            name: "[Gmail]".into(),
+            delimiter: Some("/".into()),
+            special: SpecialUse::Normal,
+            selectable: false,
+            unseen: 0,
+        });
+        let targets = search_targets(&boxes, "INBOX", SearchScope::All);
+        assert!(!targets.contains(&"[Gmail]".to_string()));
+    }
+
+    #[test]
+    fn a_mailbox_the_account_no_longer_lists_is_still_searched() {
+        // Better to ask the server than to return nothing at all.
+        let targets = search_targets(&[], "Somewhere", SearchScope::Subtree);
+        assert_eq!(targets, vec!["Somewhere"]);
+    }
 }

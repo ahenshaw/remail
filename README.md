@@ -81,8 +81,9 @@ reaches messages that were never cached.
 The scope selector beside the search box controls how far `Enter` reaches:
 this folder, this folder and everything nested under it, or the whole account.
 Base IMAP has no cross-folder search, so wider scopes select and search each
-mailbox in turn — except on Gmail, where `All Mail` already contains every
-message and one search covers the account. Every result shows which folder it
+mailbox in turn — except on Gmail, where `All Mail` stands in for most of the
+account. Not all of it: RFC 6154 permits an `\All` mailbox to omit `\Trash`
+and `\Junk`, and Gmail does, so those two are searched alongside it. Every result shows which folder it
 came from, and acting on one targets the right mailbox for that row.
 
 On Gmail the folder shown comes from the message's labels rather than the
