@@ -20,6 +20,8 @@ pub struct AccountView {
     pub expanded: bool,
     /// Set when the engine reports the account has no usable authorization.
     pub needs_sign_in: bool,
+    /// Folders whose children are hidden.
+    pub collapsed: HashSet<String>,
 }
 
 impl Default for AccountView {
@@ -29,6 +31,7 @@ impl Default for AccountView {
             state: ConnectionState::Offline,
             expanded: true,
             needs_sign_in: false,
+            collapsed: HashSet::new(),
         }
     }
 }
@@ -71,8 +74,16 @@ pub fn show(ui: &mut Ui, input: SidebarInput<'_>) -> Option<Action> {
             for account in input.config.accounts.iter().filter(|a| a.enabled) {
                 let view = input.accounts.entry(account.id).or_default();
 
-                if account_header(ui, account.short_name(), view, &font, row_height) {
-                    view.expanded = !view.expanded;
+                match account_header(ui, account.short_name(), view, &font, row_height) {
+                    Some(AccountOutcome::Toggle) => view.expanded = !view.expanded,
+                    Some(AccountOutcome::NewFolder) => {
+                        action = Some(Action::NewSubfolder {
+                            account: account.id,
+                            // No parent: a folder at the top of the account.
+                            parent: String::new(),
+                        });
+                    }
+                    None => {}
                 }
 
                 if view.needs_sign_in {
@@ -115,24 +126,39 @@ pub fn show(ui: &mut Ui, input: SidebarInput<'_>) -> Option<Action> {
                         .collect();
 
                     for mailbox in view.mailboxes.iter().filter(|m| m.selectable) {
+                        // Hidden if anything above it is collapsed.
+                        let under_collapsed = mailbox
+                            .ancestors()
+                            .iter()
+                            .any(|path| view.collapsed.contains(*path));
+                        if under_collapsed {
+                            continue;
+                        }
+
                         let selected = input
                             .selected
                             .is_some_and(|(a, m)| a == account.id && m == mailbox.name);
                         let depth = mailbox.display_depth(|path| shown.contains(path));
+                        let has_children = view
+                            .mailboxes
+                            .iter()
+                            .any(|other| other.ancestors().contains(&mailbox.name.as_str()));
 
-                        if mailbox_row(
+                        let row = mailbox_row(
                             ui,
-                            mailbox,
-                            depth,
-                            selected,
-                            &font,
-                            row_height,
-                            &input.theme.palette,
-                        ) {
-                            action = Some(Action::OpenMailbox {
-                                account: account.id,
-                                mailbox: mailbox.name.clone(),
-                            });
+                            RowInput {
+                                mailbox,
+                                depth,
+                                selected,
+                                has_children,
+                                collapsed: view.collapsed.contains(&mailbox.name),
+                                font: &font,
+                                row_height,
+                                palette: &input.theme.palette,
+                            },
+                        );
+                        if let Some(found) = row {
+                            action = Some(found.into_action(account.id, &mailbox.name));
                         }
                     }
 
@@ -150,18 +176,24 @@ pub fn show(ui: &mut Ui, input: SidebarInput<'_>) -> Option<Action> {
     action
 }
 
-/// Draws the account line. Returns true when the user toggled it.
+/// What the account line was asked to do.
+enum AccountOutcome {
+    Toggle,
+    NewFolder,
+}
+
+/// Draws the account line.
 fn account_header(
     ui: &mut Ui,
     name: &str,
     view: &AccountView,
     font: &FontId,
     row_height: f32,
-) -> bool {
+) -> Option<AccountOutcome> {
     let (rect, response) =
         ui.allocate_exact_size(Vec2::new(ui.available_width(), row_height), Sense::click());
     if !ui.is_rect_visible(rect) {
-        return response.clicked();
+        return None;
     }
 
     let visuals = ui.visuals();
@@ -198,25 +230,66 @@ fn account_header(
         visuals.strong_text_color(),
     );
 
-    response.on_hover_text(state_label(view.state)).clicked()
+    let menu = elegance::ContextMenu::new(("account-menu", name)).show(&response, |ui| {
+        ui.add(elegance::MenuItem::new("New folder\u{2026}")).clicked()
+    });
+    if menu.unwrap_or(false) {
+        return Some(AccountOutcome::NewFolder);
+    }
+
+    response
+        .on_hover_text(state_label(view.state))
+        .clicked()
+        .then_some(AccountOutcome::Toggle)
 }
 
-/// Draws one mailbox line. Returns true when it was clicked.
-fn mailbox_row(
-    ui: &mut Ui,
-    mailbox: &MailboxInfo,
+/// What a mailbox row was asked to do.
+enum RowOutcome {
+    Open,
+    Toggle,
+    MarkRead,
+    NewChild,
+    Rename,
+    Delete,
+}
+
+impl RowOutcome {
+    fn into_action(self, account: AccountId, mailbox: &str) -> Action {
+        let mailbox = mailbox.to_string();
+        match self {
+            RowOutcome::Open => Action::OpenMailbox { account, mailbox },
+            RowOutcome::Toggle => Action::ToggleFolder { account, mailbox },
+            RowOutcome::MarkRead => Action::MarkFolderRead { account, mailbox },
+            RowOutcome::NewChild => Action::NewSubfolder { account, parent: mailbox },
+            RowOutcome::Rename => Action::RenameFolder { account, mailbox },
+            RowOutcome::Delete => Action::DeleteFolder { account, mailbox },
+        }
+    }
+}
+
+struct RowInput<'a> {
+    mailbox: &'a MailboxInfo,
     depth: usize,
     selected: bool,
-    font: &FontId,
+    has_children: bool,
+    collapsed: bool,
+    font: &'a FontId,
     row_height: f32,
-    palette: &elegance::Palette,
-) -> bool {
+    palette: &'a elegance::Palette,
+}
+
+/// Draws one mailbox line.
+fn mailbox_row(ui: &mut Ui, input: RowInput<'_>) -> Option<RowOutcome> {
+    let RowInput { mailbox, depth, selected, has_children, collapsed, font, row_height, palette } =
+        input;
+
     let (rect, response) =
         ui.allocate_exact_size(Vec2::new(ui.available_width(), row_height), Sense::click());
     if !ui.is_rect_visible(rect) {
-        return response.clicked();
+        return None;
     }
 
+    let mut outcome = None;
     let visuals = ui.visuals();
     let painter = ui.painter();
 
@@ -238,16 +311,17 @@ fn mailbox_row(
     } else {
         visuals.text_color()
     };
-    let indent = rect.left() + 6.0 + 9.0 * depth as f32;
 
-    // Lay the label out first so the icon can be aligned to the text that is
-    // actually there, rather than to an estimate of it.
+    // Room for a disclosure arrow at every depth, so names line up whether or
+    // not a folder has children.
+    let arrow_width = font.size * 0.8;
+    let indent = rect.left() + 4.0 + 9.0 * depth as f32;
+    let icon_left = indent + arrow_width;
+
     let text_font = FontId::new(font.size, font.family.clone());
     let icon_size = font.size * 0.96;
-    let text_left = indent + icon_size + font.size * 0.38;
+    let text_left = icon_left + icon_size + font.size * 0.38;
 
-    // Reserve the badge before wrapping, so a long name shortens rather than
-    // running under the count.
     let mut right = rect.right() - 4.0;
     let badge = unread.then(|| {
         painter.layout_no_wrap(
@@ -271,31 +345,112 @@ fn mailbox_row(
         color,
     );
 
-    // Stood on the text baseline, the way a capital letter is. Centring the
-    // icon on the row does not work: a line box holds a descender's worth of
-    // space below the baseline, so its centre sits well under the letters.
     let baseline = top + metrics.baseline;
     super::icons::draw_mailbox(
         painter,
-        Rect::from_min_size(
-            pos2(indent, baseline - icon_size),
-            Vec2::splat(icon_size),
-        ),
+        Rect::from_min_size(pos2(icon_left, baseline - icon_size), Vec2::splat(icon_size)),
         mailbox.special,
         icon_color(mailbox.special, palette),
     );
+
+    if has_children {
+        disclosure_arrow(
+            painter,
+            pos2(indent + arrow_width * 0.5, rect.center().y),
+            font.size * 0.26,
+            !collapsed,
+            visuals.weak_text_color(),
+        );
+    }
 
     if let Some(badge) = badge {
         let y = rect.center().y - badge.size().y * 0.5;
         painter.galley(pos2(right + 6.0, y), badge, accent);
     }
 
-    // Only offer the full path when the name is actually cut off, or when the
-    // leaf alone is ambiguous because the folder is nested.
-    if shortened || depth > 0 {
-        return response.on_hover_text(&mailbox.name).clicked();
+    // A click on the arrow folds the subtree; anywhere else opens the folder.
+    if response.clicked() {
+        let on_arrow = response
+            .interact_pointer_pos()
+            .is_some_and(|at| at.x < indent + arrow_width);
+        outcome = Some(if has_children && on_arrow {
+            RowOutcome::Toggle
+        } else {
+            RowOutcome::Open
+        });
     }
-    response.clicked()
+
+    let menu = elegance::ContextMenu::new(("folder-menu", &mailbox.name)).show(
+        &response,
+        |ui| {
+            let mut chosen = None;
+            if ui
+                .add(
+                    elegance::MenuItem::new("Mark all as read")
+                        .enabled(mailbox.unseen > 0),
+                )
+                .clicked()
+            {
+                chosen = Some(RowOutcome::MarkRead);
+            }
+            ui.separator();
+            if ui.add(elegance::MenuItem::new("New subfolder\u{2026}")).clicked() {
+                chosen = Some(RowOutcome::NewChild);
+            }
+            if ui.add(elegance::MenuItem::new("Rename\u{2026}")).clicked() {
+                chosen = Some(RowOutcome::Rename);
+            }
+            if ui
+                .add(
+                    elegance::MenuItem::new("Delete folder\u{2026}")
+                        .danger()
+                        // A well-known mailbox is part of how the account
+                        // works; removing it is not an ordinary edit.
+                        .enabled(mailbox.special == SpecialUse::Normal),
+                )
+                .clicked()
+            {
+                chosen = Some(RowOutcome::Delete);
+            }
+            chosen
+        },
+    );
+    if let Some(chosen) = menu.flatten() {
+        outcome = Some(chosen);
+    }
+
+    // The full path is the only way to tell apart two folders whose leaf
+    // names match, which is common once a pane is narrow enough to truncate.
+    if shortened || depth > 0 {
+        response.on_hover_text(&mailbox.name);
+    }
+    outcome
+}
+
+/// Where the ink sits inside a line of text.
+///
+/// The nominal font size says nothing about this: a line box reserves room
+/// for ascenders and descenders, so its centre is not where the letters look
+/// centred, and its top is not where they start.
+struct TextMetrics {
+    line_height: f32,
+    /// Baseline, measured down from the top of the line box.
+    baseline: f32,
+}
+
+impl TextMetrics {
+    fn measure(painter: &egui::Painter, font: &FontId) -> Self {
+        let galley =
+            painter.layout_no_wrap("X".to_string(), font.clone(), Color32::PLACEHOLDER);
+        let baseline = galley
+            .rows
+            .first()
+            .and_then(|row| row.row.glyphs.first().map(|glyph| row.pos.y + glyph.pos.y))
+            // A font with no glyph for "X" is not worth a special case; the
+            // ascender of a typical face is close enough to keep going.
+            .unwrap_or(font.size * 0.8);
+        Self { line_height: galley.size().y, baseline }
+    }
 }
 
 /// The colour of a mailbox's icon.
@@ -322,32 +477,6 @@ fn icon_color(special: SpecialUse, palette: &elegance::Palette) -> Color32 {
             Color32::from_rgb(0xc4, 0x92, 0x3d),
             Color32::from_rgb(0xdc, 0xb9, 0x77),
         ),
-    }
-}
-
-/// Where the ink sits inside a line of text.
-///
-/// The nominal font size says nothing about this: a line box reserves room
-/// for ascenders and descenders, so its centre is not where the letters look
-/// centred, and its top is not where they start.
-struct TextMetrics {
-    line_height: f32,
-    /// Baseline, measured down from the top of the line box.
-    baseline: f32,
-}
-
-impl TextMetrics {
-    fn measure(painter: &egui::Painter, font: &FontId) -> Self {
-        let galley =
-            painter.layout_no_wrap("X".to_string(), font.clone(), Color32::PLACEHOLDER);
-        let baseline = galley
-            .rows
-            .first()
-            .and_then(|row| row.row.glyphs.first().map(|glyph| row.pos.y + glyph.pos.y))
-            // A font with no glyph for "X" is not worth a special case; the
-            // ascender of a typical face is close enough to keep going.
-            .unwrap_or(font.size * 0.8);
-        Self { line_height: galley.size().y, baseline }
     }
 }
 

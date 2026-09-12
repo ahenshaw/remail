@@ -40,6 +40,11 @@ pub enum Command {
     Connect(AccountId),
     /// Count unread messages in every mailbox.
     CountUnread(AccountId),
+    /// Mark everything in a mailbox as read.
+    MarkAllRead { account: AccountId, mailbox: String },
+    CreateMailbox { account: AccountId, name: String },
+    RenameMailbox { account: AccountId, from: String, to: String },
+    DeleteMailbox { account: AccountId, mailbox: String },
     /// Show a mailbox: emits cached contents, then syncs.
     OpenMailbox { account: AccountId, mailbox: String },
     Sync { account: AccountId, mailbox: String },
@@ -318,6 +323,10 @@ impl Command {
             | Command::CountUnread(a)
             | Command::SignIn(a)
             | Command::SignOut(a) => *a,
+            Command::MarkAllRead { account, .. }
+            | Command::CreateMailbox { account, .. }
+            | Command::RenameMailbox { account, .. }
+            | Command::DeleteMailbox { account, .. } => *account,
             Command::OpenMailbox { account, .. }
             | Command::Sync { account, .. }
             | Command::FetchBody { account, .. }
@@ -457,6 +466,35 @@ impl AccountWorker {
                     self.report_removal_failed(&mailbox, uids);
                     return Err(e);
                 }
+            }
+            Command::MarkAllRead { mailbox, .. } => {
+                let connection = self.connect().await?;
+                connection.mark_all_seen(&mailbox).await?;
+                self.events.status(self.account, format!("Marked {mailbox} read"));
+                // Re-read the flags so rows on screen stop showing unread.
+                self.sync(&mailbox).await?;
+            }
+            Command::CreateMailbox { name, .. } => {
+                let connection = self.connect().await?;
+                connection.create_mailbox(&name).await?;
+                self.events.status(self.account, format!("Created {name}"));
+                self.refresh_mailboxes().await?;
+            }
+            Command::RenameMailbox { from, to, .. } => {
+                let connection = self.connect().await?;
+                connection.rename_mailbox(&from, &to).await?;
+                // The old name's cached rows belong to a mailbox that no
+                // longer exists; the new name syncs from scratch.
+                self.store.clear_mailbox(self.account, &from)?;
+                self.events.status(self.account, format!("Renamed to {to}"));
+                self.refresh_mailboxes().await?;
+            }
+            Command::DeleteMailbox { mailbox, .. } => {
+                let connection = self.connect().await?;
+                connection.delete_mailbox(&mailbox).await?;
+                self.store.clear_mailbox(self.account, &mailbox)?;
+                self.events.status(self.account, format!("Deleted {mailbox}"));
+                self.refresh_mailboxes().await?;
             }
             Command::Search { mailbox, query, scope, .. } => {
                 self.search(&mailbox, &query, scope).await?;

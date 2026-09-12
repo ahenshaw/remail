@@ -59,6 +59,16 @@ pub enum Action {
     Print,
     /// Discard the current listing's search filter.
     ClearSearch,
+    /// Mark every message in a mailbox as read.
+    MarkFolderRead { account: AccountId, mailbox: String },
+    /// Open the dialog for a new folder under this parent.
+    NewSubfolder { account: AccountId, parent: String },
+    /// Open the dialog to rename this folder.
+    RenameFolder { account: AccountId, mailbox: String },
+    /// Ask to delete this folder.
+    DeleteFolder { account: AccountId, mailbox: String },
+    /// Show or hide a folder's children.
+    ToggleFolder { account: AccountId, mailbox: String },
 }
 
 use chrono::{DateTime, Datelike, Local, TimeZone, Utc};

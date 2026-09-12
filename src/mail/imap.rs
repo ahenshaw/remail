@@ -304,6 +304,73 @@ impl ImapConnection {
         Ok(())
     }
 
+    /// Marks every message in the selected mailbox as read.
+    ///
+    /// Uses a sequence set rather than UIDs: `1:*` covers the mailbox without
+    /// first having to learn what is in it.
+    pub async fn mark_all_seen(&mut self, mailbox: &str) -> Result<()> {
+        if self.selected.as_deref() != Some(mailbox) {
+            self.select(mailbox).await?;
+        }
+        let stream = self
+            .session
+            .store("1:*", format!("+FLAGS.SILENT ({})", Flags::imap_name(Flags::SEEN)))
+            .await
+            .with_context(|| format!("marking {mailbox} read"))?;
+        // The response must be drained before the next command.
+        let _: Vec<Fetch> = stream.try_collect().await?;
+        Ok(())
+    }
+
+    pub async fn create_mailbox(&mut self, name: &str) -> Result<()> {
+        self.session
+            .create(name)
+            .await
+            .with_context(|| format!("creating {name}"))?;
+        // Servers vary on whether a new mailbox is subscribed; do it so the
+        // folder shows up in clients that list subscriptions.
+        let _ = self.session.subscribe(name).await;
+        Ok(())
+    }
+
+    pub async fn rename_mailbox(&mut self, from: &str, to: &str) -> Result<()> {
+        // A selected mailbox cannot be renamed on some servers.
+        if self.selected.is_some() {
+            let _ = self.session.close().await;
+            self.selected = None;
+        }
+        self.session
+            .rename(from, to)
+            .await
+            .with_context(|| format!("renaming {from} to {to}"))?;
+        let _ = self.session.unsubscribe(from).await;
+        let _ = self.session.subscribe(to).await;
+        Ok(())
+    }
+
+    pub async fn delete_mailbox(&mut self, name: &str) -> Result<()> {
+        if self.selected.as_deref() == Some(name) {
+            let _ = self.session.close().await;
+            self.selected = None;
+        }
+        self.session
+            .delete(name)
+            .await
+            .with_context(|| format!("deleting {name}"))?;
+        let _ = self.session.unsubscribe(name).await;
+        Ok(())
+    }
+
+    /// Joins a parent path and a new child name with the server's delimiter.
+    pub fn child_path(parent: &str, delimiter: Option<&str>, name: &str) -> String {
+        let delimiter = delimiter.filter(|d| !d.is_empty()).unwrap_or("/");
+        if parent.is_empty() {
+            name.to_string()
+        } else {
+            format!("{parent}{delimiter}{name}")
+        }
+    }
+
     /// Appends a message to a mailbox, used to file sent mail.
     pub async fn append(&mut self, mailbox: &str, raw: &[u8], flags: &[&str]) -> Result<()> {
         let flags = (!flags.is_empty()).then(|| format!("({})", flags.join(" ")));
@@ -828,6 +895,16 @@ mod tests {
         classify(&mut boxes, false);
         assert_eq!(boxes[0].special, SpecialUse::Sent);
         assert_eq!(boxes[1].special, SpecialUse::Trash);
+    }
+
+    #[test]
+    fn builds_child_paths_with_the_server_delimiter() {
+        assert_eq!(ImapConnection::child_path("Work", Some("/"), "Reports"), "Work/Reports");
+        assert_eq!(ImapConnection::child_path("INBOX", Some("."), "Sub"), "INBOX.Sub");
+        // A top-level folder has no parent to join to.
+        assert_eq!(ImapConnection::child_path("", Some("/"), "Work"), "Work");
+        // Servers that report no delimiter still have to be given something.
+        assert_eq!(ImapConnection::child_path("Work", None, "Sub"), "Work/Sub");
     }
 
     #[test]

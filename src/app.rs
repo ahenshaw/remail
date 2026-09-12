@@ -22,7 +22,7 @@ use crate::mail::{
     RowKey, SearchScope, SpecialUse, Store,
 };
 use crate::secrets;
-use crate::ui::accounts::{AccountsAction, AccountsDialog};
+use crate::ui::accounts::{AccountsAction, AccountsDialog, FolderAction, FolderEdit};
 use crate::ui::compose::{ComposeAction, ComposeState};
 use crate::ui::images::RemoteImages;
 use crate::ui::sidebar::{AccountView, SidebarInput};
@@ -78,6 +78,8 @@ pub struct RemailApp {
 
     compose: Option<ComposeState>,
     accounts_dialog: Option<AccountsDialog>,
+    /// A folder create, rename or delete awaiting confirmation.
+    folder_edit: Option<FolderEdit>,
     settings_open: bool,
 
     status: String,
@@ -138,6 +140,7 @@ impl RemailApp {
             pending_removal: Vec::new(),
             compose: None,
             accounts_dialog: None,
+            folder_edit: None,
             settings_open: false,
             status: String::new(),
             pending_toasts: Vec::new(),
@@ -510,6 +513,46 @@ impl RemailApp {
             Action::OpenUrl(url) => self.open_url(&url),
             Action::SaveAttachment(index) => self.save_attachment(index),
             Action::Print => self.print_open_message(),
+
+            Action::MarkFolderRead { account, mailbox } => {
+                self.engine.send(Command::MarkAllRead { account, mailbox });
+            }
+            Action::NewSubfolder { account, parent } => {
+                let view = self.accounts.get(&account);
+                let delimiter = view
+                    .and_then(|view| {
+                        // The parent's own delimiter, or any mailbox's: a
+                        // server uses one separator throughout.
+                        view.mailboxes
+                            .iter()
+                            .find(|m| m.name == parent)
+                            .or_else(|| view.mailboxes.iter().find(|m| m.delimiter.is_some()))
+                    })
+                    .and_then(|mailbox| mailbox.delimiter.clone());
+                self.folder_edit = Some(FolderEdit::New {
+                    account,
+                    parent,
+                    delimiter,
+                    name: String::new(),
+                });
+            }
+            Action::RenameFolder { account, mailbox } => {
+                let name = mailbox
+                    .rsplit(['/', '.'])
+                    .next()
+                    .unwrap_or(&mailbox)
+                    .to_string();
+                self.folder_edit = Some(FolderEdit::Rename { account, mailbox, name });
+            }
+            Action::DeleteFolder { account, mailbox } => {
+                self.folder_edit = Some(FolderEdit::Delete { account, mailbox });
+            }
+            Action::ToggleFolder { account, mailbox } => {
+                let view = self.accounts.entry(account).or_default();
+                if !view.collapsed.remove(&mailbox) {
+                    view.collapsed.insert(mailbox);
+                }
+            }
         }
     }
 
@@ -1880,6 +1923,43 @@ impl RemailApp {
             }
             if closed {
                 self.accounts_dialog = None;
+            }
+        }
+
+        // Folder create / rename / delete.
+        if let Some(edit) = &mut self.folder_edit {
+            let (done, open) = crate::ui::accounts::folder_dialog(ctx, edit, &self.theme);
+            if let Some(action) = done {
+                match action {
+                    FolderAction::Create { account, name } => {
+                        self.engine.send(Command::CreateMailbox { account, name });
+                    }
+                    FolderAction::Rename { account, from, to } => {
+                        // The open mailbox is about to change name under us.
+                        if self.open_mailbox.as_ref().is_some_and(|(a, m)| *a == account && *m == from)
+                        {
+                            self.open_mailbox = None;
+                            self.envelopes.clear();
+                            self.open_message = None;
+                        }
+                        self.engine.send(Command::RenameMailbox { account, from, to });
+                    }
+                    FolderAction::Delete { account, mailbox } => {
+                        if self
+                            .open_mailbox
+                            .as_ref()
+                            .is_some_and(|(a, m)| *a == account && *m == mailbox)
+                        {
+                            self.open_mailbox = None;
+                            self.envelopes.clear();
+                            self.open_message = None;
+                        }
+                        self.engine.send(Command::DeleteMailbox { account, mailbox });
+                    }
+                }
+                self.folder_edit = None;
+            } else if !open {
+                self.folder_edit = None;
             }
         }
 

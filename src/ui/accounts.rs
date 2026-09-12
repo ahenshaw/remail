@@ -564,6 +564,160 @@ pub fn settings(
     action
 }
 
+/// A pending folder edit, shown as a modal.
+pub enum FolderEdit {
+    /// Create a folder under this parent. An empty parent means top level.
+    New { account: AccountId, parent: String, delimiter: Option<String>, name: String },
+    Rename { account: AccountId, mailbox: String, name: String },
+    Delete { account: AccountId, mailbox: String },
+}
+
+/// What the folder dialog decided.
+pub enum FolderAction {
+    Create { account: AccountId, name: String },
+    Rename { account: AccountId, from: String, to: String },
+    Delete { account: AccountId, mailbox: String },
+}
+
+/// The dialog for creating, renaming or deleting a folder.
+pub fn folder_dialog(
+    ctx: &Context,
+    edit: &mut FolderEdit,
+    theme: &Theme,
+) -> (Option<FolderAction>, bool) {
+    let mut done = None;
+    let mut open = true;
+    let mut cancelled = false;
+
+    match edit {
+        FolderEdit::New { account, parent, delimiter, name } => {
+            Modal::new("folder-new", &mut open)
+                .heading("New folder")
+                .header_icon(glyphs::FOLDER.to_string())
+                .max_width(420.0)
+                .show(ctx, |ui| {
+                    if parent.is_empty() {
+                        ui.label(theme.muted_text("Created at the top level."));
+                    } else {
+                        ui.label(theme.muted_text(format!("Inside {parent}.")));
+                    }
+                    ui.add_space(6.0);
+                    // Not focused automatically: elegance's TextInput returns
+                    // the response of its frame rather than of the editor
+                    // inside it, so a focus request has nothing to act on.
+                    ui.add(TextInput::new(name).label("Name").hint("Reports"));
+
+                    ui.add_space(10.0);
+                    let valid = is_valid_folder_name(name, delimiter.as_deref());
+                    if !valid && !name.trim().is_empty() {
+                        ui.label(theme.faint_text(
+                            "A folder name cannot contain the server's path separator.",
+                        ));
+                    }
+                    ui.horizontal(|ui| {
+                        if ui
+                            .add(Button::new("Create").accent(Accent::Blue).enabled(valid))
+                            .clicked()
+                        {
+                            done = Some(FolderAction::Create {
+                                account: *account,
+                                name: crate::mail::imap::ImapConnection::child_path(
+                                    parent,
+                                    delimiter.as_deref(),
+                                    name.trim(),
+                                ),
+                            });
+                        }
+                        if ui.add(Button::new("Cancel").outline()).clicked() {
+                            cancelled = true;
+                        }
+                    });
+                });
+        }
+
+        FolderEdit::Rename { account, mailbox, name } => {
+            Modal::new("folder-rename", &mut open)
+                .heading("Rename folder")
+                .header_icon(glyphs::PENCIL.to_string())
+                .max_width(420.0)
+                .show(ctx, |ui| {
+                    ui.label(theme.muted_text(mailbox.clone()));
+                    ui.add_space(6.0);
+                    ui.add(TextInput::new(name).label("New name"));
+
+                    ui.add_space(10.0);
+                    let valid = !name.trim().is_empty();
+                    ui.horizontal(|ui| {
+                        if ui
+                            .add(Button::new("Rename").accent(Accent::Blue).enabled(valid))
+                            .clicked()
+                        {
+                            // Renaming moves the leaf, keeping the parent, the
+                            // way every mail client treats it.
+                            let parent = mailbox
+                                .rfind(['/', '.'])
+                                .map(|at| (&mailbox[..at], &mailbox[at..at + 1]));
+                            let to = match parent {
+                                Some((head, sep)) => format!("{head}{sep}{}", name.trim()),
+                                None => name.trim().to_string(),
+                            };
+                            done = Some(FolderAction::Rename {
+                                account: *account,
+                                from: mailbox.clone(),
+                                to,
+                            });
+                        }
+                        if ui.add(Button::new("Cancel").outline()).clicked() {
+                            cancelled = true;
+                        }
+                    });
+                });
+        }
+
+        FolderEdit::Delete { account, mailbox } => {
+            Modal::new("folder-delete", &mut open)
+                .heading("Delete folder?")
+                .header_icon(glyphs::TRIANGLE_ALERT.to_string())
+                .header_accent(Accent::Red)
+                .alert(true)
+                .max_width(430.0)
+                .show(ctx, |ui| {
+                    ui.label(theme.body_text(format!(
+                        "{mailbox} and the messages in it will be deleted on the server. \
+                         This cannot be undone from here."
+                    )));
+                    ui.add_space(12.0);
+                    ui.horizontal(|ui| {
+                        if ui.add(Button::new("Delete").accent(Accent::Red)).clicked() {
+                            done = Some(FolderAction::Delete {
+                                account: *account,
+                                mailbox: mailbox.clone(),
+                            });
+                        }
+                        if ui.add(Button::new("Cancel").outline()).clicked() {
+                            cancelled = true;
+                        }
+                    });
+                });
+        }
+    }
+
+    (done, open && !cancelled)
+}
+
+/// Folder names cannot contain the server's hierarchy separator: it would
+/// silently create a nested folder instead of the one asked for.
+fn is_valid_folder_name(name: &str, delimiter: Option<&str>) -> bool {
+    let name = name.trim();
+    if name.is_empty() {
+        return false;
+    }
+    match delimiter.filter(|d| !d.is_empty()) {
+        Some(delimiter) => !name.contains(delimiter),
+        None => !name.contains('/') && !name.contains('.'),
+    }
+}
+
 /// Which pane the font picker is choosing for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pane {
@@ -707,4 +861,31 @@ fn settings_equal(a: &crate::config::UiSettings, b: &crate::config::UiSettings) 
         && a.folders == b.folders
         && a.messages == b.messages
         && a.reading == b.reading
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_names_holding_the_separator() {
+        assert!(is_valid_folder_name("Reports", Some("/")));
+        assert!(!is_valid_folder_name("Work/Reports", Some("/")));
+        // A dot server nests on dots, so a dot is the thing to reject there.
+        assert!(is_valid_folder_name("Work/Reports", Some(".")));
+        assert!(!is_valid_folder_name("Work.Reports", Some(".")));
+    }
+
+    #[test]
+    fn rejects_empty_names() {
+        assert!(!is_valid_folder_name("", Some("/")));
+        assert!(!is_valid_folder_name("   ", Some("/")));
+    }
+
+    #[test]
+    fn without_a_delimiter_both_common_separators_are_refused() {
+        assert!(!is_valid_folder_name("a/b", None));
+        assert!(!is_valid_folder_name("a.b", None));
+        assert!(is_valid_folder_name("ab", None));
+    }
 }
