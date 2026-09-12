@@ -198,7 +198,7 @@ pub struct MailboxInfo {
     pub special: SpecialUse,
     /// `\Noselect` mailboxes exist only as parents of other mailboxes.
     pub selectable: bool,
-    pub exists: u32,
+    /// Unread messages, from `STATUS`. Zero until first counted.
     pub unseen: u32,
 }
 

@@ -136,24 +136,22 @@ impl Store {
             }
 
             let mut up = tx.prepare(
-                "INSERT INTO mailbox (account, name, delimiter, special, selectable, exists_count, unseen)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                "INSERT INTO mailbox (account, name, delimiter, special, selectable)
+                 VALUES (?1, ?2, ?3, ?4, ?5)
                  ON CONFLICT(account, name) DO UPDATE SET
-                     delimiter    = excluded.delimiter,
-                     special      = excluded.special,
-                     selectable   = excluded.selectable,
-                     exists_count = excluded.exists_count,
-                     unseen       = excluded.unseen",
+                     delimiter  = excluded.delimiter,
+                     special    = excluded.special,
+                     selectable = excluded.selectable",
             )?;
             for b in boxes {
+                // Unread counts are not written here: they come from STATUS
+                // after listing, and a stale one is worse than none.
                 up.execute(params![
                     account,
                     b.name,
                     b.delimiter,
                     special_to_i64(b.special),
                     b.selectable as i64,
-                    b.exists,
-                    b.unseen
                 ])?;
             }
         }
@@ -164,7 +162,7 @@ impl Store {
     pub fn load_mailboxes(&self, account: AccountId) -> Result<Vec<MailboxInfo>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT name, delimiter, special, selectable, exists_count, unseen
+            "SELECT name, delimiter, special, selectable, unseen
              FROM mailbox WHERE account = ?1",
         )?;
         let rows = stmt.query_map(params![account], |r| {
@@ -173,8 +171,7 @@ impl Store {
                 delimiter: r.get(1)?,
                 special: special_from_i64(r.get(2)?),
                 selectable: r.get::<_, i64>(3)? != 0,
-                exists: r.get(4)?,
-                unseen: r.get(5)?,
+                unseen: r.get(4)?,
             })
         })?;
         Ok(rows.collect::<std::result::Result<_, _>>()?)

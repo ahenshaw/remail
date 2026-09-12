@@ -47,8 +47,6 @@ pub struct ImapConnection {
 pub struct Selected {
     pub uid_validity: u32,
     pub uid_next: u32,
-    pub exists: u32,
-    pub unseen: u32,
 }
 
 /// What ended an IDLE wait.
@@ -164,11 +162,12 @@ impl ImapConnection {
             .await
             .with_context(|| format!("selecting mailbox {mailbox}"))?;
         self.selected = Some(mailbox.to_string());
+        // `SELECT` also reports UNSEEN, but that is the sequence number of
+        // the first unseen message, not a count of them. Counts come from
+        // `STATUS`; see `unread_count`.
         Ok(Selected {
             uid_validity: info.uid_validity.unwrap_or(0),
             uid_next: info.uid_next.unwrap_or(0),
-            exists: info.exists,
-            unseen: info.unseen.unwrap_or(0),
         })
     }
 
@@ -178,6 +177,24 @@ impl ImapConnection {
     pub async fn reselect(&mut self, mailbox: &str) -> Result<Selected> {
         self.selected = None;
         self.select(mailbox).await
+    }
+
+    /// How many unread messages a mailbox holds.
+    ///
+    /// `STATUS` is the only command that answers this directly. RFC 3501 says
+    /// a server should not be asked about the mailbox that is currently
+    /// selected, so that one is counted with `SEARCH UNSEEN` instead.
+    pub async fn unread_count(&mut self, mailbox: &str) -> Result<u32> {
+        if self.selected.as_deref() == Some(mailbox) {
+            return Ok(self.session.search("UNSEEN").await?.len() as u32);
+        }
+
+        let status = self
+            .session
+            .status(mailbox, "(UNSEEN)")
+            .await
+            .with_context(|| format!("reading the status of {mailbox}"))?;
+        Ok(status.unseen.unwrap_or(0))
     }
 
     /// Fetches envelopes for a UID range such as `"1000:*"`.
@@ -437,7 +454,6 @@ fn mailbox_from_name(name: &Name) -> MailboxInfo {
         delimiter: name.delimiter().map(str::to_string),
         special,
         selectable,
-        exists: 0,
         unseen: 0,
     }
 }
@@ -692,7 +708,6 @@ mod tests {
                     // alone would give, which is Inbox and nothing else.
                     special: if inbox { SpecialUse::Inbox } else { SpecialUse::Normal },
                     selectable: row.get::<_, i64>(2)? != 0,
-                    exists: 0,
                     unseen: 0,
                 })
             })
@@ -788,7 +803,6 @@ mod tests {
             delimiter: Some("/".to_string()),
             special,
             selectable: true,
-            exists: 0,
             unseen: 0,
         }
     }

@@ -38,6 +38,8 @@ const BODY_CACHE_BYTES: i64 = 512 * 1024 * 1024;
 pub enum Command {
     /// Bring an account online and list its mailboxes.
     Connect(AccountId),
+    /// Count unread messages in every mailbox.
+    CountUnread(AccountId),
     /// Show a mailbox: emits cached contents, then syncs.
     OpenMailbox { account: AccountId, mailbox: String },
     Sync { account: AccountId, mailbox: String },
@@ -72,8 +74,8 @@ pub enum Event {
     Error { account: AccountId, text: String },
     Connection { account: AccountId, state: ConnectionState },
     Mailboxes { account: AccountId, mailboxes: Vec<MailboxInfo> },
-    /// Message counts for one mailbox, refreshed on every `SELECT`.
-    MailboxStats { account: AccountId, mailbox: String, exists: u32, unseen: u32 },
+    /// How many unread messages a mailbox holds.
+    MailboxStats { account: AccountId, mailbox: String, unseen: u32 },
     /// Contents of a mailbox as of this moment. `from_cache` distinguishes the
     /// instant paint from the server-confirmed refresh.
     Listing {
@@ -312,7 +314,10 @@ impl Command {
     /// The account a command targets, if any.
     fn account(&self) -> Option<AccountId> {
         Some(match self {
-            Command::Connect(a) | Command::SignIn(a) | Command::SignOut(a) => *a,
+            Command::Connect(a)
+            | Command::CountUnread(a)
+            | Command::SignIn(a)
+            | Command::SignOut(a) => *a,
             Command::OpenMailbox { account, .. }
             | Command::Sync { account, .. }
             | Command::FetchBody { account, .. }
@@ -408,6 +413,16 @@ impl AccountWorker {
                 self.connect().await?;
                 self.refresh_mailboxes().await?;
             }
+            Command::CountUnread(_) => {
+                let mailboxes: Vec<String> = self
+                    .store
+                    .load_mailboxes(self.account)?
+                    .into_iter()
+                    .filter(|mailbox| mailbox.selectable)
+                    .map(|mailbox| mailbox.name)
+                    .collect();
+                self.report_unread(&mailboxes).await;
+            }
             Command::OpenMailbox { mailbox, .. } | Command::Sync { mailbox, .. } => {
                 self.sync(&mailbox).await?;
                 self.ensure_idle(&mailbox).await;
@@ -500,8 +515,34 @@ impl AccountWorker {
         let connection = self.connect().await?;
         let mailboxes = connection.list_mailboxes().await?;
         self.store.save_mailboxes(self.account, &mailboxes)?;
+
         self.events.emit(Event::Mailboxes { account: self.account, mailboxes });
+
+        // Counting is one round trip per mailbox, which on a large account
+        // is slower than the first sync the user is waiting for. Queue it
+        // behind whatever is already pending rather than ahead of it.
+        let _ = self.supervisor.send(Command::CountUnread(self.account));
         Ok(())
+    }
+
+    /// Counts unread messages and reports each mailbox as it is measured.
+    ///
+    /// One round trip per mailbox, so the counts arrive progressively rather
+    /// than the sidebar waiting for all of them. A mailbox that cannot be
+    /// counted is skipped: a missing badge is a better outcome than failing
+    /// the command that asked for it.
+    async fn report_unread(&mut self, mailboxes: &[String]) {
+        for mailbox in mailboxes {
+            let Ok(connection) = self.connect().await else { return };
+            match connection.unread_count(mailbox).await {
+                Ok(unseen) => self.events.emit(Event::MailboxStats {
+                    account: self.account,
+                    mailbox: mailbox.clone(),
+                    unseen,
+                }),
+                Err(e) => tracing::debug!("could not count {mailbox}: {e}"),
+            }
+        }
     }
 
     /// Reconciles one mailbox with the server: new messages, flag changes and
@@ -512,12 +553,6 @@ impl AccountWorker {
         let connection = self.connect().await?;
 
         let selected = connection.select(mailbox).await?;
-        self.events.emit(Event::MailboxStats {
-            account,
-            mailbox: mailbox.to_string(),
-            exists: selected.exists,
-            unseen: selected.unseen,
-        });
         let mut state = self.store.mailbox_state(account, mailbox)?;
 
         // A changed UIDVALIDITY means every cached UID is meaningless.
@@ -573,6 +608,7 @@ impl AccountWorker {
         }
 
         self.reconcile_flags(mailbox).await?;
+        self.report_unread(&[mailbox.to_string()]).await;
         self.events.status(account, "Up to date");
         Ok(())
     }
@@ -753,6 +789,7 @@ impl AccountWorker {
             uids: uids.to_vec(),
         });
         self.events.status(account, format!("Moved {} to {destination}", plural(uids.len())));
+        self.report_unread(&[mailbox.to_string(), destination.to_string()]).await;
         Ok(())
     }
 

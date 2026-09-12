@@ -214,18 +214,19 @@ fn draw_row(
     };
 
     let size = input.font.size;
+    // A bar down the whole row, not a dot beside one line: at a glance the
+    // eye picks up the run of unread messages, not six separate marks.
+    if unread {
+        let bar = Rect::from_min_max(
+            pos2(rect.left() + 3.0, rect.top() + 4.0),
+            pos2(rect.left() + 6.5, rect.bottom() - 4.0),
+        );
+        painter.rect_filled(bar, 1.75, palette.blue);
+    }
+
     let left = rect.left() + 12.0;
     let right = rect.right() - 38.0;
-
-    // Unread marker doubles as the left gutter.
-    if unread {
-        painter.circle_filled(
-            pos2(left + 3.0, rect.top() + metrics.sender_y + size * 0.5),
-            3.5,
-            palette.blue,
-        );
-    }
-    let text_left = left + 16.0;
+    let text_left = left;
 
     let date = format_date_short(envelope.date);
     let date_width = if date.is_empty() {

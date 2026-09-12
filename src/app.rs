@@ -256,10 +256,9 @@ impl RemailApp {
                 self.sort_envelopes();
             }
 
-            Event::MailboxStats { account, mailbox, exists, unseen } => {
+            Event::MailboxStats { account, mailbox, unseen } => {
                 if let Some(view) = self.accounts.get_mut(&account) {
                     if let Some(info) = view.mailboxes.iter_mut().find(|m| m.name == mailbox) {
-                        info.exists = exists;
                         info.unseen = unseen;
                     }
                 }
