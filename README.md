@@ -146,7 +146,7 @@ dropped and rebuilt.
 ## Security notes
 
 - `<script>`, `<style>`, `<iframe>`, event handlers and `javascript:` URLs are
-  removed before either renderer sees the markup.
+  removed before the renderer sees the markup.
 - Remote images are withheld by default; the reader says how many and offers to
   load them, because loading them tells the sender you opened the message.
   The choice is remembered, at either of two scopes: **Load images** applies to
