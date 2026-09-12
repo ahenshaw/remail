@@ -475,11 +475,19 @@ impl RemailApp {
             Action::SearchServer(query) => {
                 if let Some((account, mailbox)) = self.open_mailbox.clone() {
                     let scope = self.search_scope;
+                    let include_spam_and_trash =
+                        self.config.read().unwrap().ui.search_spam_and_trash;
                     self.status = format!(
                         "Searching {} for \u{201c}{query}\u{201d}\u{2026}",
                         scope.label().to_lowercase()
                     );
-                    self.engine.send(Command::Search { account, mailbox, query, scope });
+                    self.engine.send(Command::Search {
+                        account,
+                        mailbox,
+                        query,
+                        scope,
+                        include_spam_and_trash,
+                    });
                 }
             }
             Action::ClearSearch => {
@@ -1527,6 +1535,36 @@ impl RemailApp {
             // A narrower or wider scope invalidates what is on screen.
             if self.search_results.is_some() && !self.search.trim().is_empty() {
                 action = Some(Action::SearchServer(self.search.trim().to_string()));
+            }
+        }
+
+        // Spam and Trash only mean anything when the search covers the whole
+        // account; at a narrower scope the option would be inert.
+        if self.search_scope == SearchScope::All {
+            let mut include = self.config.read().unwrap().ui.search_spam_and_trash;
+            // Filled when it is on, outlined when off: the state has to be
+            // readable without hovering for a tooltip.
+            let mut button =
+                Button::new(glyphs::TRASH.to_string()).size(ButtonSize::Small);
+            button = if include {
+                button.accent(Accent::Blue)
+            } else {
+                button.outline()
+            };
+            let toggle = ui
+                .add(button)
+                .on_hover_text(if include {
+                    "Including Spam and Trash \u{2014} click to exclude them"
+                } else {
+                    "Excluding Spam and Trash \u{2014} click to include them"
+                });
+            if toggle.clicked() {
+                include = !include;
+                self.config.write().unwrap().ui.search_spam_and_trash = include;
+                self.save_config();
+                if self.search_results.is_some() && !self.search.trim().is_empty() {
+                    action = Some(Action::SearchServer(self.search.trim().to_string()));
+                }
             }
         }
 

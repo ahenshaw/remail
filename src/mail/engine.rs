@@ -71,7 +71,14 @@ pub enum Command {
     /// Move to Trash, or expunge outright if already there.
     Delete { account: AccountId, mailbox: String, uids: Vec<u32> },
     Send { draft: Draft },
-    Search { account: AccountId, mailbox: String, query: String, scope: SearchScope },
+    Search {
+        account: AccountId,
+        mailbox: String,
+        query: String,
+        scope: SearchScope,
+        /// Whether Spam and Trash are included in a whole-account search.
+        include_spam_and_trash: bool,
+    },
     /// Run the interactive OAuth flow for an account.
     SignIn(AccountId),
     SignOut(AccountId),
@@ -510,8 +517,8 @@ impl AccountWorker {
                 self.events.status(self.account, format!("Deleted {mailbox}"));
                 self.refresh_mailboxes().await?;
             }
-            Command::Search { mailbox, query, scope, .. } => {
-                self.search(&mailbox, &query, scope).await?;
+            Command::Search { mailbox, query, scope, include_spam_and_trash, .. } => {
+                self.search(&mailbox, &query, scope, include_spam_and_trash).await?;
             }
             Command::Send { draft } => {
                 self.send(draft).await?;
@@ -947,10 +954,16 @@ impl AccountWorker {
     /// exception worth special-casing: its `\All` mailbox already contains
     /// every message, so a whole-account search is one round trip there
     /// instead of thirty.
-    async fn search(&mut self, mailbox: &str, query: &str, scope: SearchScope) -> Result<()> {
+    async fn search(
+        &mut self,
+        mailbox: &str,
+        query: &str,
+        scope: SearchScope,
+        include_spam_and_trash: bool,
+    ) -> Result<()> {
         let account = self.account;
         let criteria = imap::text_search(query)?;
-        let targets = self.search_targets(mailbox, scope)?;
+        let targets = self.search_targets(mailbox, scope, include_spam_and_trash)?;
 
         let mut results: Vec<Envelope> = Vec::new();
         let mut searched = 0usize;
@@ -1000,11 +1013,21 @@ impl AccountWorker {
     }
 
     /// The mailboxes a search should cover, in the order to visit them.
-    fn search_targets(&self, mailbox: &str, scope: SearchScope) -> Result<Vec<String>> {
+    fn search_targets(
+        &self,
+        mailbox: &str,
+        scope: SearchScope,
+        include_spam_and_trash: bool,
+    ) -> Result<Vec<String>> {
         if scope == SearchScope::Folder {
             return Ok(vec![mailbox.to_string()]);
         }
-        Ok(search_targets(&self.store.load_mailboxes(self.account)?, mailbox, scope))
+        Ok(search_targets(
+            &self.store.load_mailboxes(self.account)?,
+            mailbox,
+            scope,
+            include_spam_and_trash,
+        ))
     }
 
     async fn send(&mut self, draft: Draft) -> Result<()> {
@@ -1118,30 +1141,34 @@ impl AccountWorker {
 /// An `\All` mailbox stands in for the whole account, which turns a
 /// thirty-round-trip search into one. It is not quite everything, though:
 /// RFC 6154 permits `\All` to omit `\Trash` and `\Junk`, and Gmail does
-/// exactly that, so those two are searched alongside it. Without them a
-/// message in the bin is simply not found, which looks like a broken search
-/// rather than a deliberate omission.
+/// exactly that. Whether those two belong in the results is the user's call,
+/// so it is asked for rather than assumed — but when they are wanted, they
+/// have to be named explicitly, or a message in the bin is simply not found.
 fn search_targets(
     mailboxes: &[MailboxInfo],
     mailbox: &str,
     scope: SearchScope,
+    include_spam_and_trash: bool,
 ) -> Vec<String> {
     let selectable = |candidate: &&MailboxInfo| candidate.selectable;
+    let is_spam_or_trash = |candidate: &MailboxInfo| {
+        matches!(candidate.special, SpecialUse::Trash | SpecialUse::Junk)
+    };
 
     if scope == SearchScope::All {
         if let Some(all) = mailboxes.iter().filter(selectable).find(|candidate| {
             candidate.special == SpecialUse::All
         }) {
             let mut targets = vec![all.name.clone()];
-            targets.extend(
-                mailboxes
-                    .iter()
-                    .filter(selectable)
-                    .filter(|candidate| {
-                        matches!(candidate.special, SpecialUse::Trash | SpecialUse::Junk)
-                    })
-                    .map(|candidate| candidate.name.clone()),
-            );
+            if include_spam_and_trash {
+                targets.extend(
+                    mailboxes
+                        .iter()
+                        .filter(selectable)
+                        .filter(|candidate| is_spam_or_trash(candidate))
+                        .map(|candidate| candidate.name.clone()),
+                );
+            }
             targets.dedup();
             return targets;
         }
@@ -1151,7 +1178,9 @@ fn search_targets(
         .iter()
         .filter(selectable)
         .filter(|candidate| match scope {
-            SearchScope::All => true,
+            // Without an All mailbox every folder is visited, so the two are
+            // dropped here instead of skipped there.
+            SearchScope::All => include_spam_and_trash || !is_spam_or_trash(candidate),
             SearchScope::Subtree => {
                 candidate.name == mailbox || is_descendant(candidate, mailbox)
             }
@@ -1215,7 +1244,7 @@ mod tests {
     #[test]
     fn searching_everything_covers_the_bin_and_the_spam() {
         // All Mail alone would miss them: RFC 6154 lets it, and Gmail does.
-        let targets = search_targets(&gmail(), "INBOX", SearchScope::All);
+        let targets = search_targets(&gmail(), "INBOX", SearchScope::All, true);
         assert_eq!(targets[0], "[Gmail]/All Mail", "the cheap path was not used");
         assert!(targets.contains(&"[Gmail]/Trash".to_string()), "Trash was skipped");
         assert!(targets.contains(&"[Gmail]/Spam".to_string()), "Spam was skipped");
@@ -1230,20 +1259,46 @@ mod tests {
             mailbox("Archive", SpecialUse::Archive),
             mailbox("Trash", SpecialUse::Trash),
         ];
-        let targets = search_targets(&plain, "INBOX", SearchScope::All);
+        let targets = search_targets(&plain, "INBOX", SearchScope::All, true);
         assert_eq!(targets.len(), 3);
         assert_eq!(targets[0], "INBOX", "the open folder should be searched first");
     }
 
     #[test]
+    fn the_bin_and_the_spam_can_be_left_out() {
+        let targets = search_targets(&gmail(), "INBOX", SearchScope::All, false);
+        assert_eq!(targets, vec!["[Gmail]/All Mail"]);
+
+        // And on a server with no All mailbox, where they would otherwise be
+        // visited along with everything else.
+        let plain = vec![
+            mailbox("INBOX", SpecialUse::Inbox),
+            mailbox("Archive", SpecialUse::Archive),
+            mailbox("Trash", SpecialUse::Trash),
+            mailbox("Spam", SpecialUse::Junk),
+        ];
+        let targets = search_targets(&plain, "INBOX", SearchScope::All, false);
+        assert_eq!(targets, vec!["INBOX", "Archive"]);
+    }
+
+    #[test]
+    fn the_setting_does_not_touch_a_narrower_scope() {
+        // Searching inside Trash itself must work whatever the option says.
+        let with = search_targets(&gmail(), "[Gmail]/Trash", SearchScope::Subtree, true);
+        let without = search_targets(&gmail(), "[Gmail]/Trash", SearchScope::Subtree, false);
+        assert_eq!(with, vec!["[Gmail]/Trash"]);
+        assert_eq!(without, vec!["[Gmail]/Trash"]);
+    }
+
+    #[test]
     fn a_subtree_covers_the_folder_and_its_children() {
-        let targets = search_targets(&gmail(), "Work", SearchScope::Subtree);
+        let targets = search_targets(&gmail(), "Work", SearchScope::Subtree, true);
         assert_eq!(targets, vec!["Work", "Work/Reports"]);
     }
 
     #[test]
     fn a_subtree_of_a_leaf_is_just_that_leaf() {
-        let targets = search_targets(&gmail(), "Work/Reports", SearchScope::Subtree);
+        let targets = search_targets(&gmail(), "Work/Reports", SearchScope::Subtree, true);
         assert_eq!(targets, vec!["Work/Reports"]);
     }
 
@@ -1257,14 +1312,14 @@ mod tests {
             selectable: false,
             unseen: 0,
         });
-        let targets = search_targets(&boxes, "INBOX", SearchScope::All);
+        let targets = search_targets(&boxes, "INBOX", SearchScope::All, true);
         assert!(!targets.contains(&"[Gmail]".to_string()));
     }
 
     #[test]
     fn a_mailbox_the_account_no_longer_lists_is_still_searched() {
         // Better to ask the server than to return nothing at all.
-        let targets = search_targets(&[], "Somewhere", SearchScope::Subtree);
+        let targets = search_targets(&[], "Somewhere", SearchScope::Subtree, true);
         assert_eq!(targets, vec!["Somewhere"]);
     }
 }

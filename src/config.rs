@@ -360,6 +360,8 @@ pub struct UiSettings {
     pub poll_interval_secs: u64,
     /// Envelopes fetched per mailbox on the initial sync.
     pub initial_sync_count: u32,
+    /// Whether a whole-account search reaches into Spam and Trash.
+    pub search_spam_and_trash: bool,
     /// Base text size, used by any pane without its own override.
     pub font_size: f32,
     pub folders: PaneStyle,
@@ -382,6 +384,9 @@ impl Default for UiSettings {
             load_remote_content: false,
             poll_interval_secs: 120,
             initial_sync_count: 500,
+            // On by default: a scope labelled "all folders" that quietly
+            // skipped two of them would be the more surprising choice.
+            search_spam_and_trash: true,
             font_size: 14.0,
             folders: PaneStyle::default(),
             messages: PaneStyle::default(),
