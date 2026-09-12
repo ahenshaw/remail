@@ -48,3 +48,4 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 url = "2"
 webpki-roots = "1"
 rusqlite = { version = "0.38", features = ["bundled"] }
+fontdb = { version = "0.24", default-features = false, features = ["fs", "memmap", "fontconfig"] }

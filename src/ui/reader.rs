@@ -22,9 +22,8 @@ pub struct ReaderInput<'a> {
     pub remote: &'a mut RemoteImages,
     /// Whether this message may load remote content.
     pub allow_remote: bool,
-    pub base_size: f32,
-    /// Text settings for this pane.
-    pub style: crate::config::PaneStyle,
+    /// Font this pane draws in.
+    pub font: egui::FontId,
     pub show_source: &'a mut bool,
     /// The body has been requested but has not arrived.
     pub loading: bool,
@@ -68,7 +67,7 @@ pub fn show(ui: &mut Ui, input: ReaderInput<'_>) -> Option<Action> {
     }
 
     if *input.show_source {
-        source_view(ui, input.prepared, input.body, input.base_size);
+        source_view(ui, input.prepared, input.body, input.font.size);
         return action;
     }
 
@@ -95,7 +94,7 @@ pub fn show(ui: &mut Ui, input: ReaderInput<'_>) -> Option<Action> {
                 remote: input.remote,
                 allow_remote: input.allow_remote,
             };
-            let font = super::pane_font(input.style, input.base_size);
+            let font = input.font.clone();
             let options = RenderOptions {
                 base_size: font.size,
                 family: font.family.clone(),

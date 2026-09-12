@@ -397,15 +397,24 @@ fn encryption_select(ui: &mut Ui, id: &str, encryption: &mut Encryption) {
 }
 
 /// The settings dialog.
+/// Everything the settings dialog needs beyond the config itself.
+pub struct SettingsInput<'a> {
+    pub servo_available: bool,
+    /// Senders trusted to load remote content, across all accounts.
+    pub trusted_senders: u32,
+    /// Font families installed on the system.
+    pub families: &'a [String],
+    pub picker: &'a mut FontPicker,
+    pub theme: &'a Theme,
+}
+
 pub fn settings(
     ctx: &Context,
     open: &mut bool,
     config: &mut Config,
-    servo_available: bool,
-    // Senders trusted to load remote content, across all accounts.
-    trusted_senders: u32,
-    theme: &Theme,
+    input: SettingsInput<'_>,
 ) -> Option<AccountsAction> {
+    let SettingsInput { servo_available, trusted_senders, families, picker, theme } = input;
     let mut action = None;
 
     Modal::new("settings-modal", open)
@@ -441,9 +450,9 @@ pub fn settings(
             ui.add_space(4.0);
 
             let base = config.ui.font_size;
-            pane_row(ui, "Folders", "folders", &mut config.ui.folders, base);
-            pane_row(ui, "Messages", "messages", &mut config.ui.messages, base);
-            pane_row(ui, "Reading", "reading", &mut config.ui.reading, base);
+            pane_row(ui, "Folders", Pane::Folders, &mut config.ui.folders, base, picker);
+            pane_row(ui, "Messages", Pane::Messages, &mut config.ui.messages, base, picker);
+            pane_row(ui, "Reading", Pane::Reading, &mut config.ui.reading, base, picker);
 
             let overridden = config.ui.folders.font_size.is_some()
                 || config.ui.messages.font_size.is_some()
@@ -540,21 +549,63 @@ pub fn settings(
             }
         });
 
+    // Drawn after the settings modal so it stacks above it.
+    if let Some(target) = picker.target {
+        if let Some(font) = font_picker(ctx, picker, families, theme) {
+            match target {
+                Pane::Folders => config.ui.folders.font = font,
+                Pane::Messages => config.ui.messages.font = font,
+                Pane::Reading => config.ui.reading.font = font,
+            }
+            action = Some(AccountsAction::SettingsChanged);
+        }
+    }
+
     action
 }
 
+/// Which pane the font picker is choosing for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pane {
+    Folders,
+    Messages,
+    Reading,
+}
+
+/// State of the font picker. Held by the app so the filter survives frames.
+#[derive(Default)]
+pub struct FontPicker {
+    pub target: Option<Pane>,
+    pub filter: String,
+}
+
 /// One pane's font family and size.
-fn pane_row(ui: &mut Ui, label: &str, id: &str, style: &mut PaneStyle, base: f32) {
+fn pane_row(
+    ui: &mut Ui,
+    label: &str,
+    pane: Pane,
+    style: &mut PaneStyle,
+    base: f32,
+    picker: &mut FontPicker,
+) {
     ui.horizontal(|ui| {
         ui.add_sized([74.0, 20.0], egui::Label::new(label));
 
-        let mut font = style.font;
-        ui.add(
-            Select::new(id, &mut font)
-                .options(PaneFont::all().map(|f| (f, f.label())))
-                .width(84.0),
-        );
-        style.font = font;
+        // A dropdown is unusable with thousands of families, so the name is a
+        // button that opens a searchable list.
+        if ui
+            .add(
+                Button::new(style.font.label())
+                    .size(ButtonSize::Small)
+                    .outline()
+                    .min_width(150.0),
+            )
+            .on_hover_text("Choose a font")
+            .clicked()
+        {
+            picker.target = Some(pane);
+            picker.filter.clear();
+        }
 
         // The slider starts at whatever the pane draws at today; touching it
         // pins an override, which "Match base size" clears again.
@@ -563,13 +614,83 @@ fn pane_row(ui: &mut Ui, label: &str, id: &str, style: &mut PaneStyle, base: f32
             .add(
                 elegance::Slider::new(&mut size, 9.0..=26.0)
                     .decimals(0)
-                    .desired_width(150.0),
+                    .desired_width(120.0),
             )
             .changed()
         {
             style.font_size = Some(size);
         }
     });
+}
+
+/// The searchable list of installed font families.
+///
+/// Returns the family chosen this frame, if any.
+fn font_picker(
+    ctx: &Context,
+    picker: &mut FontPicker,
+    families: &[String],
+    theme: &Theme,
+) -> Option<PaneFont> {
+    let Some(target) = picker.target else { return None };
+    let _ = target;
+
+    let mut chosen = None;
+    let mut open = true;
+
+    Modal::new("font-picker", &mut open)
+        .heading("Choose a font")
+        .header_icon(glyphs::PENCIL.to_string())
+        .max_width(460.0)
+        .show(ctx, |ui| {
+            ui.add(
+                TextInput::new(&mut picker.filter)
+                    .hint("Filter by name")
+                    .compact(true)
+                    .desired_width(ui.available_width()),
+            );
+            ui.add_space(6.0);
+
+            let needle = picker.filter.trim().to_lowercase();
+            let matches: Vec<&String> = families
+                .iter()
+                .filter(|name| needle.is_empty() || name.to_lowercase().contains(&needle))
+                .collect();
+
+            ui.label(theme.faint_text(match matches.len() {
+                0 => "No matching fonts".to_string(),
+                1 => "1 font".to_string(),
+                n => format!("{n} fonts"),
+            }));
+            ui.add_space(4.0);
+
+            egui::ScrollArea::vertical()
+                .max_height(300.0)
+                .min_scrolled_height(300.0)
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    // The built-ins always come first: they need no loading
+                    // and are the safe fallback.
+                    if needle.is_empty() {
+                        for built_in in [PaneFont::Sans, PaneFont::Mono] {
+                            if ui.selectable_label(false, built_in.label()).clicked() {
+                                chosen = Some(built_in);
+                            }
+                        }
+                        ui.separator();
+                    }
+                    for name in matches {
+                        if ui.selectable_label(false, name).clicked() {
+                            chosen = Some(PaneFont::Named(name.clone()));
+                        }
+                    }
+                });
+        });
+
+    if chosen.is_some() || !open {
+        picker.target = None;
+    }
+    chosen
 }
 
 /// Field-wise comparison; `UiSettings` holds floats, so `PartialEq` on the

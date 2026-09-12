@@ -22,9 +22,8 @@ pub struct ListInput<'a> {
     pub show_folder: bool,
     pub theme: &'a elegance::Theme,
     pub compact: bool,
-    pub base_size: f32,
-    /// Font family this pane draws in.
-    pub family: egui::FontFamily,
+    /// Font this pane draws in.
+    pub font: FontId,
     /// Scroll so the cursor is visible; set after a keyboard move.
     pub scroll_to_cursor: bool,
     pub empty_message: &'a str,
@@ -51,9 +50,9 @@ pub fn show(ui: &mut Ui, input: ListInput<'_>) -> ListOutput {
     }
 
     let row_height = if input.compact {
-        input.base_size * 2.0
+        input.font.size * 2.0
     } else {
-        input.base_size * 3.6
+        input.font.size * 3.6
     };
 
     let cursor_index = input
@@ -126,8 +125,8 @@ fn draw_row(
 ) {
     let visuals = ui.visuals();
     let painter = ui.painter();
-    let family = input.family.clone();
-    let font = |size: f32| FontId::new(size, family.clone());
+    let family = input.font.family.clone();
+    let font = |scale: f32| FontId::new(scale, family.clone());
 
     // Stripes go down first so selection and hover read as states layered on
     // top of them rather than as another stripe colour. The index is the
@@ -135,17 +134,17 @@ fn draw_row(
     //
     // Derived from this pane's own fill rather than `faint_bg_color`, which
     // is not guaranteed to differ from the panel colour the app sets.
+    let palette = &input.theme.palette;
     if index % 2 == 1 {
-        let palette = &input.theme.palette;
-        painter.rect_filled(rect, 0.0, palette.depth_tint(palette.bg, 0.04));
+        painter.rect_filled(rect, 0.0, palette.depth_tint(palette.bg, 0.022));
     }
 
     let background = if is_cursor {
-        visuals.selection.bg_fill.gamma_multiply(0.55)
+        super::accent_tint(palette, 0.78)
     } else if is_selected {
-        visuals.selection.bg_fill.gamma_multiply(0.3)
+        super::accent_tint(palette, 0.88)
     } else if response.hovered() {
-        visuals.widgets.hovered.bg_fill.gamma_multiply(0.4)
+        super::accent_tint(palette, 0.94)
     } else {
         Color32::TRANSPARENT
     };
@@ -161,29 +160,23 @@ fn draw_row(
 
     let unread = envelope.flags.is_unread();
     let strong = visuals.strong_text_color();
-    let normal = visuals.text_color();
     let weak = visuals.weak_text_color();
 
     // Subjects carry the accent. A read one recedes towards body text so the
     // colour still marks the column without shouting on every row.
-    let palette = &input.theme.palette;
     let subject_color = if unread {
         palette.blue
     } else {
         super::mix(palette.blue, palette.text_muted, 0.4)
     };
 
-    let size = input.base_size;
+    let size = input.font.size;
     let left = rect.left() + 10.0;
     let right = rect.right() - 34.0;
 
     // Unread marker doubles as the left gutter.
     if unread {
-        painter.circle_filled(
-            pos2(left + 3.0, rect.top() + size * 0.95),
-            3.5,
-            visuals.selection.bg_fill,
-        );
+        painter.circle_filled(pos2(left + 3.0, rect.top() + size * 0.95), 3.5, palette.blue);
     }
     let text_left = left + 14.0;
 
@@ -214,8 +207,9 @@ fn draw_row(
         first_line_width,
         &sender,
         font(size * 0.95),
-        if unread { strong } else { normal },
-        true,
+        // egui has one weight per family, so "strong" is a colour, not a
+        // heavier face. Senders take it whether or not they are unread.
+        strong,
     );
 
     if input.compact {
@@ -228,7 +222,6 @@ fn draw_row(
             display_subject(envelope),
             font(size * 0.95),
             subject_color,
-            false,
         );
     } else {
         let _ = paint_truncated(
@@ -238,7 +231,6 @@ fn draw_row(
             display_subject(envelope),
             font(size * 0.95),
             subject_color,
-            false,
         );
 
         let mut preview_left = text_left;
@@ -248,13 +240,10 @@ fn draw_row(
                 .rsplit(['/', '.'])
                 .next()
                 .unwrap_or(&envelope.mailbox);
-            let galley = painter.layout_no_wrap(
-                leaf.to_string(),
-                font(size * 0.74),
-                visuals.selection.bg_fill,
-            );
+            let galley =
+                painter.layout_no_wrap(leaf.to_string(), font(size * 0.74), palette.blue);
             let width = galley.size().x;
-            painter.galley(pos2(preview_left, rect.top() + size * 2.66), galley, visuals.selection.bg_fill);
+            painter.galley(pos2(preview_left, rect.top() + size * 2.66), galley, palette.blue);
             preview_left += width + 8.0;
         }
 
@@ -266,7 +255,6 @@ fn draw_row(
                 &envelope.preview,
                 font(size * 0.82),
                 weak,
-                false,
             );
         }
     }

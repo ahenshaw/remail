@@ -33,7 +33,7 @@ pub enum Encryption {
     StartTls,
 }
 
-/// Which of elegance's built-in themes the window uses.
+/// Window theme.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ThemeChoice {
@@ -42,57 +42,95 @@ pub enum ThemeChoice {
     Charcoal,
     Frost,
     Paper,
+    /// A light theme following Outlook's surfaces: grey chrome, a white
+    /// reading pane, and a pale blue selection.
+    Outlook,
 }
 
 impl ThemeChoice {
     pub fn theme(self) -> elegance::Theme {
-        self.built_in().theme()
-    }
-
-    pub fn built_in(self) -> elegance::BuiltInTheme {
         match self {
-            ThemeChoice::Slate => elegance::BuiltInTheme::Slate,
-            ThemeChoice::Charcoal => elegance::BuiltInTheme::Charcoal,
-            ThemeChoice::Frost => elegance::BuiltInTheme::Frost,
-            ThemeChoice::Paper => elegance::BuiltInTheme::Paper,
+            ThemeChoice::Slate => elegance::Theme::slate(),
+            ThemeChoice::Charcoal => elegance::Theme::charcoal(),
+            ThemeChoice::Frost => elegance::Theme::frost(),
+            ThemeChoice::Paper => elegance::Theme::paper(),
+            ThemeChoice::Outlook => outlook_theme(),
         }
     }
 
     pub fn label(self) -> &'static str {
-        self.built_in().label()
+        match self {
+            ThemeChoice::Slate => "Slate",
+            ThemeChoice::Charcoal => "Charcoal",
+            ThemeChoice::Frost => "Frost",
+            ThemeChoice::Paper => "Paper",
+            ThemeChoice::Outlook => "Outlook",
+        }
     }
 
-    pub fn all() -> [ThemeChoice; 4] {
-        [ThemeChoice::Slate, ThemeChoice::Charcoal, ThemeChoice::Frost, ThemeChoice::Paper]
+    pub fn all() -> [ThemeChoice; 5] {
+        [
+            ThemeChoice::Slate,
+            ThemeChoice::Charcoal,
+            ThemeChoice::Frost,
+            ThemeChoice::Paper,
+            ThemeChoice::Outlook,
+        ]
     }
 }
 
-/// Font family for a pane. Only the families egui has loaded are available;
-/// elegance installs one proportional and one monospace face.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// Surfaces sampled from Outlook's light theme.
+///
+/// The structure matters more than the exact values: grey chrome carrying the
+/// folder list, a slightly different grey behind the message list, and the
+/// reading column as white paper. The folder pane is taken a little deeper
+/// than Outlook's, which draws it identically to the list, so the three panes
+/// stay distinguishable.
+fn outlook_theme() -> elegance::Theme {
+    use egui::Color32;
+
+    let mut theme = elegance::Theme::frost();
+    let palette = &mut theme.palette;
+    palette.is_dark = false;
+    palette.bg = Color32::from_rgb(0xf5, 0xf5, 0xf5);
+    palette.card = Color32::from_rgb(0xff, 0xff, 0xff);
+    palette.input_bg = Color32::from_rgb(0xff, 0xff, 0xff);
+    palette.border = Color32::from_rgb(0xe1, 0xe1, 0xe1);
+    palette.text = Color32::from_rgb(0x24, 0x24, 0x24);
+    palette.text_muted = Color32::from_rgb(0x61, 0x61, 0x61);
+    palette.text_faint = Color32::from_rgb(0x8a, 0x8a, 0x8a);
+    palette.blue = Color32::from_rgb(0x0f, 0x6c, 0xbd);
+    palette.blue_hover = Color32::from_rgb(0x11, 0x5e, 0xa3);
+    theme
+}
+
+/// Font family for a pane: one of the two faces egui ships, or any family
+/// installed on the system, loaded on demand.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum PaneFont {
+    /// egui's built-in proportional face.
     #[default]
     Sans,
+    /// egui's built-in monospace face.
     Mono,
+    /// A system family, by name.
+    Named(String),
 }
 
 impl PaneFont {
-    pub fn label(self) -> &'static str {
+    pub fn label(&self) -> &str {
         match self {
-            PaneFont::Sans => "Sans",
-            PaneFont::Mono => "Mono",
+            PaneFont::Sans => "Sans (built-in)",
+            PaneFont::Mono => "Mono (built-in)",
+            PaneFont::Named(name) => name,
         }
-    }
-
-    pub fn all() -> [PaneFont; 2] {
-        [PaneFont::Sans, PaneFont::Mono]
     }
 }
 
 /// Per-pane text settings. Each pane can differ: a dense folder list and a
 /// comfortable reading column want different sizes.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PaneStyle {
     /// Overrides [`UiSettings::font_size`] for this pane when set.
@@ -102,7 +140,7 @@ pub struct PaneStyle {
 
 impl PaneStyle {
     /// The size this pane actually draws at.
-    pub fn size(self, base: f32) -> f32 {
+    pub fn size(&self, base: f32) -> f32 {
         self.font_size.unwrap_or(base).clamp(8.0, 32.0)
     }
 }

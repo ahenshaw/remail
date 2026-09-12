@@ -10,7 +10,7 @@ use egui::{Align2, Color32, FontId, RichText, Sense, Ui, Vec2, pos2};
 use elegance::{Accent, Button, ButtonSize, Theme};
 
 use super::{Action, paint_truncated};
-use crate::config::{AccountId, Config, PaneStyle};
+use crate::config::{AccountId, Config};
 use crate::mail::{ConnectionState, MailboxInfo};
 
 /// Per-account view state the sidebar needs.
@@ -37,8 +37,7 @@ pub struct SidebarInput<'a> {
     pub config: &'a Config,
     pub accounts: &'a mut HashMap<AccountId, AccountView>,
     pub selected: Option<(AccountId, &'a str)>,
-    pub style: PaneStyle,
-    pub base_size: f32,
+    pub font: FontId,
     pub theme: &'a Theme,
 }
 
@@ -59,7 +58,7 @@ pub fn show(ui: &mut Ui, input: SidebarInput<'_>) -> Option<Action> {
         return None;
     }
 
-    let font = super::pane_font(input.style, input.base_size);
+    let font = input.font.clone();
     let size = font.size;
     // Rows are sized from the text, so tightening the font tightens the list.
     let row_height = (size * 1.5).round();
@@ -121,7 +120,15 @@ pub fn show(ui: &mut Ui, input: SidebarInput<'_>) -> Option<Action> {
                             .is_some_and(|(a, m)| a == account.id && m == mailbox.name);
                         let depth = mailbox.display_depth(|path| shown.contains(path));
 
-                        if mailbox_row(ui, mailbox, depth, selected, &font, row_height) {
+                        if mailbox_row(
+                            ui,
+                            mailbox,
+                            depth,
+                            selected,
+                            &font,
+                            row_height,
+                            &input.theme.palette,
+                        ) {
                             action = Some(Action::OpenMailbox {
                                 account: account.id,
                                 mailbox: mailbox.name.clone(),
@@ -182,7 +189,6 @@ fn account_header(
         name,
         FontId::new(font.size, font.family.clone()),
         visuals.strong_text_color(),
-        true,
     );
 
     response.on_hover_text(state_label(view.state)).clicked()
@@ -196,6 +202,7 @@ fn mailbox_row(
     selected: bool,
     font: &FontId,
     row_height: f32,
+    palette: &elegance::Palette,
 ) -> bool {
     let (rect, response) =
         ui.allocate_exact_size(Vec2::new(ui.available_width(), row_height), Sense::click());
@@ -207,9 +214,9 @@ fn mailbox_row(
     let painter = ui.painter();
 
     let background = if selected {
-        visuals.selection.bg_fill.gamma_multiply(0.65)
+        super::accent_tint(palette, 0.80)
     } else if response.hovered() {
-        visuals.widgets.hovered.bg_fill.gamma_multiply(0.5)
+        super::accent_tint(palette, 0.92)
     } else {
         Color32::TRANSPARENT
     };
@@ -218,6 +225,7 @@ fn mailbox_row(
     }
 
     let unread = mailbox.unseen > 0;
+    let accent = palette.blue;
     let color = if selected || unread {
         visuals.strong_text_color()
     } else {
@@ -242,14 +250,10 @@ fn mailbox_row(
         let galley = painter.layout_no_wrap(
             badge,
             FontId::new(font.size * 0.82, font.family.clone()),
-            visuals.selection.bg_fill,
+            accent,
         );
         let width = galley.size().x;
-        painter.galley(
-            pos2(right - width, baseline + font.size * 0.08),
-            galley,
-            visuals.selection.bg_fill,
-        );
+        painter.galley(pos2(right - width, baseline + font.size * 0.08), galley, accent);
         right -= width + 6.0;
     }
 
@@ -261,7 +265,6 @@ fn mailbox_row(
         mailbox.leaf(),
         FontId::new(font.size, font.family.clone()),
         color,
-        false,
     );
 
     // Only offer the full path when the name is actually cut off, or when the

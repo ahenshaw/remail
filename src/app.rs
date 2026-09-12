@@ -88,6 +88,9 @@ pub struct RemailApp {
     installed_theme: Option<crate::config::ThemeChoice>,
     /// Senders trusted to load remote content, refreshed when settings open.
     trusted_senders: u32,
+    /// System fonts, scanned once and installed into egui on first use.
+    fonts: crate::ui::fonts::FontLibrary,
+    font_picker: crate::ui::accounts::FontPicker,
     keyring_available: bool,
 
     #[cfg(feature = "servo")]
@@ -139,6 +142,8 @@ impl RemailApp {
             theme,
             installed_theme: None,
             trusted_senders: 0,
+            fonts: crate::ui::fonts::FontLibrary::load(),
+            font_picker: crate::ui::accounts::FontPicker::default(),
             keyring_available: secrets::available(),
             #[cfg(feature = "servo")]
             servo: None,
@@ -1129,11 +1134,32 @@ impl eframe::App for RemailApp {
         // In a light theme `card` is lighter than `bg`, so the reading column
         // is the brightest thing on screen and the folder list recedes.
         let palette = &self.theme.palette;
-        let folders_fill = palette.depth_tint(palette.bg, 0.07);
+        let folders_fill = palette.depth_tint(palette.bg, 0.025);
         let messages_fill = palette.bg;
         let reading_fill = palette.card;
         let surface = |fill: egui::Color32, margin: i8| {
             egui::Frame::new().fill(fill).inner_margin(margin)
+        };
+
+        // Resolve each pane's font once per frame. After the first use of a
+        // family this is a map lookup; the expensive install happens inside.
+        let (folders_font, messages_font, reading_font) = {
+            let ui_config = self.config.read().unwrap().ui.clone();
+            let base = ui_config.font_size;
+            (
+                egui::FontId::new(
+                    ui_config.folders.size(base),
+                    self.fonts.resolve(&ctx, &ui_config.folders.font),
+                ),
+                egui::FontId::new(
+                    ui_config.messages.size(base),
+                    self.fonts.resolve(&ctx, &ui_config.messages.font),
+                ),
+                egui::FontId::new(
+                    ui_config.reading.size(base),
+                    self.fonts.resolve(&ctx, &ui_config.reading.font),
+                ),
+            )
         };
 
         egui::Panel::top("toolbar").show(ui, |ui| {
@@ -1161,8 +1187,7 @@ impl eframe::App for RemailApp {
                         config: &config,
                         accounts: &mut self.accounts,
                         selected,
-                        style: config.ui.folders,
-                        base_size: config.ui.font_size,
+                        font: folders_font.clone(),
                         theme: &self.theme,
                     },
                 );
@@ -1174,13 +1199,13 @@ impl eframe::App for RemailApp {
             .size_range(180.0..=760.0)
             .frame(surface(messages_fill, 0))
             .show(ui, |ui| {
-                action = action.take().or(self.message_list(ui));
+                action = action.take().or(self.message_list(ui, messages_font.clone()));
             });
 
         egui::CentralPanel::default()
             .frame(surface(reading_fill, 8))
             .show(ui, |ui| {
-                action = action.take().or(self.reader(ui));
+                action = action.take().or(self.reader(ui, reading_font.clone()));
             });
 
         self.dialogs(&ctx);
@@ -1380,13 +1405,9 @@ impl RemailApp {
         action
     }
 
-    fn message_list(&mut self, ui: &mut egui::Ui) -> Option<Action> {
+    fn message_list(&mut self, ui: &mut egui::Ui, font: egui::FontId) -> Option<Action> {
         let visible = self.visible();
-        let (compact, base_size, style) = {
-            let config = self.config.read().unwrap();
-            (config.ui.compact_list, config.ui.font_size, config.ui.messages)
-        };
-        let font = crate::ui::pane_font(style, base_size);
+        let compact = self.config.read().unwrap().ui.compact_list;
 
         let empty_message = if self.open_mailbox.is_none() {
             "Select a mailbox"
@@ -1408,8 +1429,7 @@ impl RemailApp {
                 compact,
                 show_folder: spans_mailboxes(&visible),
                 theme: &self.theme,
-                base_size: font.size,
-                family: font.family.clone(),
+                font,
                 scroll_to_cursor,
                 empty_message,
             },
@@ -1440,11 +1460,7 @@ impl RemailApp {
         }
     }
 
-    fn reader(&mut self, ui: &mut egui::Ui) -> Option<Action> {
-        let (base_size, style) = {
-            let config = self.config.read().unwrap();
-            (config.ui.font_size, config.ui.reading)
-        };
+    fn reader(&mut self, ui: &mut egui::Ui, font: egui::FontId) -> Option<Action> {
         // Resolved before the mutable borrow of `open_message` below.
         let servo_active = self.servo_active();
 
@@ -1459,8 +1475,7 @@ impl RemailApp {
                     textures: &mut self.textures,
                     remote: &mut self.remote_images,
                     allow_remote: false,
-                    base_size,
-                    style,
+                    font: font.clone(),
                     show_source: &mut false,
                     loading: false,
                     theme: &self.theme,
@@ -1480,8 +1495,7 @@ impl RemailApp {
                 textures: &mut self.textures,
                 remote: &mut self.remote_images,
                 allow_remote: open.allow_remote,
-                base_size,
-                style,
+                font,
                 show_source: &mut open.show_source,
                 loading: open.body.is_none(),
                 theme: &self.theme,
@@ -1768,9 +1782,13 @@ impl RemailApp {
                     ctx,
                     &mut open,
                     &mut config,
-                    servo_available,
-                    self.trusted_senders,
-                    &self.theme,
+                    crate::ui::accounts::SettingsInput {
+                        servo_available,
+                        trusted_senders: self.trusted_senders,
+                        families: self.fonts.families(),
+                        picker: &mut self.font_picker,
+                        theme: &self.theme,
+                    },
                 )
             };
             self.settings_open = open;

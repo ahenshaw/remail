@@ -14,6 +14,8 @@ Servo rendering backend for message bodies.
   arrives without polling. Servers without `IDLE` fall back to a timer.
 - **Two HTML renderers.** A built-in one that draws sanitized mail directly with
   egui, and Servo for messages that need real CSS layout.
+- **Per-pane typography.** Folders, messages and the reading column each pick
+  their own size and font from any family installed on the system.
 - **Private by default.** Remote images are blocked until you ask for them,
   per message.
 

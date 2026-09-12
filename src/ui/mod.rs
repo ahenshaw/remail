@@ -7,14 +7,15 @@
 
 pub mod accounts;
 pub mod compose;
+pub mod fonts;
 pub mod images;
 pub mod message_list;
 pub mod reader;
 pub mod sidebar;
 
-use egui::{Color32, FontFamily, FontId};
+use egui::{Color32, FontId};
 
-use crate::config::{AccountId, PaneFont, PaneStyle};
+use crate::config::AccountId;
 use crate::mail::RowKey;
 
 /// Something the user did that the app needs to act on.
@@ -150,15 +151,6 @@ mod tests {
     }
 }
 
-/// The font a pane draws its own text in.
-pub fn pane_font(style: PaneStyle, base_size: f32) -> FontId {
-    let family = match style.font {
-        PaneFont::Sans => FontFamily::Proportional,
-        PaneFont::Mono => FontFamily::Monospace,
-    };
-    FontId::new(style.size(base_size), family)
-}
-
 /// Draws one line of text, truncating with an ellipsis at `max_width`.
 ///
 /// Shared by the panes that paint their own rows, so folder names and subject
@@ -172,7 +164,6 @@ pub fn paint_truncated(
     text: &str,
     font: FontId,
     color: Color32,
-    bold: bool,
 ) -> bool {
     if text.is_empty() || max_width <= 8.0 {
         return false;
@@ -198,19 +189,20 @@ pub fn paint_truncated(
             }
         }
         let shortened: String = chars[..low].iter().collect::<String>() + "\u{2026}";
-        galley = painter.layout_no_wrap(shortened, font.clone(), color);
+        galley = painter.layout_no_wrap(shortened, font, color);
     }
-    // egui ships one weight per family, so `strong` is only a colour change.
-    // Drawing the glyphs twice a fraction of a pixel apart thickens the
-    // strokes, which is what "bold" has to mean without a second font file.
-    if bold {
-        let offset = (font.size * 0.05).max(0.4);
-        painter.galley(position, galley.clone(), color);
-        painter.galley(position + egui::vec2(offset, 0.0), galley, color);
-    } else {
-        painter.galley(position, galley, color);
-    }
+    painter.galley(position, galley, color);
     truncated
+}
+
+/// A selection or hover tint drawn from the theme's accent.
+///
+/// `subtlety` runs from 0 (the accent at full strength) to 1 (invisible
+/// against the surface). Mixing towards the card colour rather than
+/// brightening or darkening keeps the result readable on light and dark
+/// themes alike, where a fixed adjustment would go the wrong way on one.
+pub fn accent_tint(palette: &elegance::Palette, subtlety: f32) -> Color32 {
+    mix(palette.blue, palette.card, subtlety)
 }
 
 /// Blends two colours in linear space. Used to recede an accent colour
