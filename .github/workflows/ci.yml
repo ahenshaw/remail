@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # eframe links against X11, xkbcommon and GL even for the test binary.
+      - name: Install system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
+            libxkbcommon-dev libgl1-mesa-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        run: cargo fmt --check
+
+      # Clippy caps lints on dependencies, so this denies warnings in this
+      # crate only -- rustc's as well as clippy's.
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test
+
+      # Every icon the interface draws has to exist in egui's bundled fonts;
+      # a missing one renders as an empty box, and only once it is on screen.
+      - name: Glyph coverage
+        run: |
+          pip install --quiet fonttools
+          python3 scripts/glyphs.py
