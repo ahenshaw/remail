@@ -203,32 +203,31 @@ fn account_header(
     // Drawn rather than set: neither small triangle has a glyph in the
     // bundled fonts, and a disclosure arrow that renders as a box is worse
     // than no arrow at all.
+    let metrics = TextMetrics::measure(painter, &text_font);
+    let top = rect.center().y - metrics.line_height * 0.5;
+    // Everything on this row hangs off the text's line, not the row's middle.
+    let mark_centre = metrics.centre_for(top, font.size * 0.72);
+
     disclosure_arrow(
         painter,
-        pos2(rect.left() + 9.0, rect.center().y),
+        pos2(rect.left() + 9.0, mark_centre),
         font.size * 0.30,
         view.expanded,
         visuals.weak_text_color(),
     );
     painter.circle_filled(
-        pos2(rect.left() + 18.0, rect.center().y),
+        pos2(rect.left() + 18.0, mark_centre),
         3.0,
         connection_color(view.state),
     );
 
     let left = rect.left() + 26.0;
-    // Laid out first so the row can centre it, rather than centring an
-    // estimate of where the text will land.
     let galley = painter.layout_no_wrap(
         name.to_string(),
         text_font,
         visuals.strong_text_color(),
     );
-    painter.galley(
-        pos2(left, rect.center().y - galley.size().y * 0.5),
-        galley,
-        visuals.strong_text_color(),
-    );
+    painter.galley(pos2(left, top), galley, visuals.strong_text_color());
 
     let menu = elegance::ContextMenu::new(("account-menu", name)).show(&response, |ui| {
         ui.add(elegance::MenuItem::new("New folder\u{2026}")).clicked()
@@ -323,13 +322,9 @@ fn mailbox_row(ui: &mut Ui, input: RowInput<'_>) -> Option<RowOutcome> {
     let text_left = icon_left + icon_size + font.size * 0.38;
 
     let mut right = rect.right() - 4.0;
-    let badge = unread.then(|| {
-        painter.layout_no_wrap(
-            mailbox.unseen.to_string(),
-            FontId::new(font.size * 0.82, font.family.clone()),
-            accent,
-        )
-    });
+    let badge_font = FontId::new(font.size * 0.82, font.family.clone());
+    let badge = unread
+        .then(|| painter.layout_no_wrap(mailbox.unseen.to_string(), badge_font.clone(), accent));
     if let Some(badge) = &badge {
         right -= badge.size().x + 6.0;
     }
@@ -356,7 +351,7 @@ fn mailbox_row(ui: &mut Ui, input: RowInput<'_>) -> Option<RowOutcome> {
     if has_children {
         disclosure_arrow(
             painter,
-            pos2(indent + arrow_width * 0.5, rect.center().y),
+            pos2(indent + arrow_width * 0.5, metrics.centre_for(top, icon_size)),
             font.size * 0.26,
             !collapsed,
             visuals.weak_text_color(),
@@ -364,8 +359,11 @@ fn mailbox_row(ui: &mut Ui, input: RowInput<'_>) -> Option<RowOutcome> {
     }
 
     if let Some(badge) = badge {
-        let y = rect.center().y - badge.size().y * 0.5;
-        painter.galley(pos2(right + 6.0, y), badge, accent);
+        // Smaller text, so its line box differs: line the two baselines up
+        // rather than their tops, which would leave the count riding high.
+        let badge_metrics = TextMetrics::measure(painter, &badge_font);
+        let badge_top = top + metrics.baseline - badge_metrics.baseline;
+        painter.galley(pos2(right + 6.0, badge_top), badge, accent);
     }
 
     // A click on the arrow folds the subtree; anywhere else opens the folder.
@@ -439,6 +437,15 @@ struct TextMetrics {
 }
 
 impl TextMetrics {
+    /// The y that a mark of `height` should be centred on so it sits on the
+    /// baseline, like a capital letter.
+    ///
+    /// Not the row's centre: a line box reserves a descender's worth of space
+    /// below the baseline, so its middle is well under the letters.
+    fn centre_for(&self, top: f32, height: f32) -> f32 {
+        top + self.baseline - height * 0.5
+    }
+
     fn measure(painter: &egui::Painter, font: &FontId) -> Self {
         let galley =
             painter.layout_no_wrap("X".to_string(), font.clone(), Color32::PLACEHOLDER);
