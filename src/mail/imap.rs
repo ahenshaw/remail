@@ -141,7 +141,15 @@ impl ImapConnection {
             .await
             .context("listing mailboxes")?;
 
+        // A server that labels its own folders is authoritative. Guessing on
+        // top of that promotes any user folder that happens to be called
+        // "Sent Mail" into a second Sent folder.
+        let advertises_special_use = names
+            .iter()
+            .any(|name| name.attributes().iter().any(is_special_use_attribute));
+
         let mut boxes: Vec<MailboxInfo> = names.iter().map(mailbox_from_name).collect();
+        classify(&mut boxes, advertises_special_use);
         boxes.sort_by(|a, b| {
             a.special.rank().cmp(&b.special.rank()).then_with(|| a.name.cmp(&b.name))
         });
@@ -409,8 +417,6 @@ fn mailbox_from_name(name: &Name) -> MailboxInfo {
     }
     if name.name().eq_ignore_ascii_case("INBOX") {
         special = SpecialUse::Inbox;
-    } else if special == SpecialUse::Normal {
-        special = guess_special_use(name.name());
     }
 
     MailboxInfo {
@@ -420,6 +426,32 @@ fn mailbox_from_name(name: &Name) -> MailboxInfo {
         selectable,
         exists: 0,
         unseen: 0,
+    }
+}
+
+fn is_special_use_attribute(attribute: &NameAttribute<'_>) -> bool {
+    matches!(
+        attribute,
+        NameAttribute::All
+            | NameAttribute::Archive
+            | NameAttribute::Drafts
+            | NameAttribute::Junk
+            | NameAttribute::Sent
+            | NameAttribute::Trash
+    )
+}
+
+/// Fills in special-use roles the server did not provide.
+///
+/// The name-based fallback only runs when the server advertises no RFC 6154
+/// attributes anywhere. Otherwise its silence about a folder is meaningful:
+/// the folder is not special, whatever it happens to be called.
+fn classify(mailboxes: &mut [MailboxInfo], advertises_special_use: bool) {
+    if advertises_special_use {
+        return;
+    }
+    for mailbox in mailboxes.iter_mut().filter(|m| m.special == SpecialUse::Normal) {
+        mailbox.special = guess_special_use(&mailbox.name);
     }
 }
 
@@ -564,6 +596,65 @@ mod tests {
         assert!(text_search("  ").is_err());
     }
 
+    /// Renders the sidebar tree for the mailboxes in the local cache, using
+    /// the real classification and indentation rules. Lets folder-layout
+    /// changes be checked without launching the UI.
+    ///
+    /// The cache stores folder names, not the server's `SPECIAL-USE`
+    /// attributes, so roles cannot be reconstructed here: the well-known
+    /// folders print as ordinary ones. What this does show faithfully is the
+    /// nesting and which folders stay ordinary.
+    #[test]
+    #[ignore = "reads the local message cache"]
+    fn print_sidebar_tree() {
+        let Ok(path) = crate::config::data_dir().map(|d| d.join("cache.sqlite")) else {
+            return;
+        };
+        if !path.exists() {
+            return;
+        }
+        let conn = rusqlite::Connection::open_with_flags(
+            &path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .unwrap();
+        let mut statement = conn
+            .prepare("SELECT name, delimiter, selectable FROM mailbox")
+            .unwrap();
+        let mut boxes: Vec<MailboxInfo> = statement
+            .query_map([], |row| {
+                let name: String = row.get(0)?;
+                let inbox = name.eq_ignore_ascii_case("INBOX");
+                Ok(MailboxInfo {
+                    name,
+                    delimiter: row.get(1)?,
+                    // Roles come from the server; start from what attributes
+                    // alone would give, which is Inbox and nothing else.
+                    special: if inbox { SpecialUse::Inbox } else { SpecialUse::Normal },
+                    selectable: row.get::<_, i64>(2)? != 0,
+                    exists: 0,
+                    unseen: 0,
+                })
+            })
+            .unwrap()
+            .collect::<std::result::Result<_, _>>()
+            .unwrap();
+
+        // Gmail advertises SPECIAL-USE, so the name fallback stays off.
+        classify(&mut boxes, true);
+        boxes.sort_by(|a, b| {
+            a.special.rank().cmp(&b.special.rank()).then_with(|| a.name.cmp(&b.name))
+        });
+
+        let shown: std::collections::HashSet<&str> =
+            boxes.iter().filter(|m| m.selectable).map(|m| m.name.as_str()).collect();
+        println!("--- sidebar ---");
+        for mailbox in boxes.iter().filter(|m| m.selectable) {
+            let depth = mailbox.display_depth(|path| shown.contains(path));
+            println!("{}{} {}", "    ".repeat(depth), mailbox.special.icon(), mailbox.leaf());
+        }
+    }
+
     /// Exercises TCP, TLS, the greeting and `LOGIN` against a real server.
     /// Ignored by default because it needs the network; run with
     /// `cargo test -- --ignored`.
@@ -581,6 +672,40 @@ mod tests {
             text.contains("login failed"),
             "expected an authentication failure, got: {text}"
         );
+    }
+
+    fn mailbox(name: &str, special: SpecialUse) -> MailboxInfo {
+        MailboxInfo {
+            name: name.to_string(),
+            delimiter: Some("/".to_string()),
+            special,
+            selectable: true,
+            exists: 0,
+            unseen: 0,
+        }
+    }
+
+    #[test]
+    fn keeps_server_labelling_authoritative() {
+        // Gmail's shape: it labels its own Sent folder, and a user label
+        // merely called "Sent Mail" must stay an ordinary folder.
+        let mut boxes = vec![
+            mailbox("[Gmail]/Sent Mail", SpecialUse::Sent),
+            mailbox("Maverick/Sent Mail", SpecialUse::Normal),
+            mailbox("Maverick/Important", SpecialUse::Normal),
+        ];
+        classify(&mut boxes, true);
+        assert_eq!(boxes[0].special, SpecialUse::Sent);
+        assert_eq!(boxes[1].special, SpecialUse::Normal);
+        assert_eq!(boxes[2].special, SpecialUse::Normal);
+    }
+
+    #[test]
+    fn guesses_only_when_the_server_says_nothing() {
+        let mut boxes = vec![mailbox("Sent", SpecialUse::Normal), mailbox("Trash", SpecialUse::Normal)];
+        classify(&mut boxes, false);
+        assert_eq!(boxes[0].special, SpecialUse::Sent);
+        assert_eq!(boxes[1].special, SpecialUse::Trash);
     }
 
     #[test]

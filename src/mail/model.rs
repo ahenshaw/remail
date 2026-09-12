@@ -173,12 +173,32 @@ impl MailboxInfo {
         }
     }
 
-    /// Nesting level, used for indentation in the sidebar.
-    pub fn depth(&self) -> usize {
-        match self.delimiter.as_deref().filter(|d| !d.is_empty()) {
-            Some(d) => self.name.matches(d).count(),
-            None => 0,
+    /// Paths of this mailbox's ancestors, outermost first. `Maverick/HR`
+    /// yields `["Maverick"]`.
+    pub fn ancestors(&self) -> Vec<&str> {
+        let Some(delimiter) = self.delimiter.as_deref().filter(|d| !d.is_empty()) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        let mut offset = 0;
+        while let Some(index) = self.name[offset..].find(delimiter) {
+            offset += index;
+            if offset > 0 {
+                out.push(&self.name[..offset]);
+            }
+            offset += delimiter.len();
         }
+        out
+    }
+
+    /// Indentation level for display, counting only ancestors that are
+    /// themselves shown.
+    ///
+    /// Gmail nests its special folders under a `\Noselect` `[Gmail]`
+    /// container that never appears in the sidebar. Indenting its children
+    /// under it would leave them hanging below nothing.
+    pub fn display_depth(&self, is_shown: impl Fn(&str) -> bool) -> usize {
+        self.ancestors().into_iter().filter(|path| is_shown(path)).count()
     }
 }
 
@@ -260,4 +280,50 @@ pub struct MessageKey {
     pub account: AccountId,
     pub mailbox: String,
     pub uid: u32,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn mailbox(name: &str) -> MailboxInfo {
+        MailboxInfo {
+            name: name.to_string(),
+            delimiter: Some("/".to_string()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn lists_ancestor_paths_outermost_first() {
+        assert_eq!(mailbox("Maverick/HR").ancestors(), vec!["Maverick"]);
+        assert_eq!(mailbox("a/b/c").ancestors(), vec!["a", "a/b"]);
+        assert!(mailbox("INBOX").ancestors().is_empty());
+    }
+
+    #[test]
+    fn ignores_a_missing_delimiter() {
+        let flat = MailboxInfo { name: "a/b".into(), delimiter: None, ..Default::default() };
+        assert!(flat.ancestors().is_empty());
+        assert_eq!(flat.leaf(), "a/b");
+    }
+
+    #[test]
+    fn indents_against_visible_ancestors_only() {
+        // `[Gmail]` is \Noselect and never shown, so its children sit at the
+        // top level rather than under an invisible parent.
+        let shown = ["INBOX", "Maverick", "Maverick/HR", "[Gmail]/Important"];
+        let is_shown = |path: &str| shown.contains(&path);
+
+        assert_eq!(mailbox("[Gmail]/Important").display_depth(is_shown), 0);
+        assert_eq!(mailbox("Maverick/HR").display_depth(is_shown), 1);
+        assert_eq!(mailbox("Maverick").display_depth(is_shown), 0);
+    }
+
+    #[test]
+    fn takes_the_leaf_after_the_delimiter() {
+        assert_eq!(mailbox("[Gmail]/Sent Mail").leaf(), "Sent Mail");
+        assert_eq!(mailbox("Maverick/Sent Mail").leaf(), "Sent Mail");
+        assert_eq!(mailbox("INBOX").leaf(), "INBOX");
+    }
 }

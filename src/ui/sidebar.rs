@@ -1,6 +1,6 @@
 //! Left pane: accounts and their mailboxes.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use egui::{Color32, RichText, Ui};
 use elegance::{Accent, Button, ButtonSize};
@@ -97,13 +97,23 @@ pub fn show(ui: &mut Ui, input: SidebarInput<'_>) -> Option<Action> {
             }
 
             if view.expanded {
+                // Indent against the mailboxes actually on screen, so the
+                // children of a hidden container are not left dangling.
+                let shown: HashSet<&str> = view
+                    .mailboxes
+                    .iter()
+                    .filter(|m| m.selectable)
+                    .map(|m| m.name.as_str())
+                    .collect();
+
                 for mailbox in view.mailboxes.iter().filter(|m| m.selectable) {
                     let is_selected = input
                         .selected
                         .is_some_and(|(a, m)| a == account.id && m == mailbox.name);
 
                     ui.horizontal(|ui| {
-                        ui.add_space(8.0 + 10.0 * mailbox.depth() as f32);
+                        let depth = mailbox.display_depth(|path| shown.contains(path));
+                        ui.add_space(8.0 + 10.0 * depth as f32);
                         let label = format!("{} {}", mailbox.special.icon(), mailbox.leaf());
                         let mut text = RichText::new(label);
                         if mailbox.unseen > 0 {
