@@ -270,6 +270,9 @@ pub struct Attachment {
 #[derive(Debug, Clone)]
 pub struct InlinePart {
     pub content_id: String,
+    /// Needed to build a `data:` URL when the message is written out for
+    /// printing, where `cid:` references have nothing to resolve against.
+    pub mime: String,
     pub data: Vec<u8>,
 }
 

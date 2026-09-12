@@ -18,6 +18,8 @@ Servo rendering backend for message bodies.
   their own size and font from any family installed on the system.
 - **Private by default.** Remote images are blocked until you ask for them,
   per message.
+- **Print** hands the message to your browser, where print preview, page setup
+  and PDF export already live.
 
 ## Building
 

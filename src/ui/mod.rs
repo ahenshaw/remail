@@ -54,6 +54,8 @@ pub enum Action {
     OpenUrl(String),
     /// Write an attachment to disk.
     SaveAttachment(usize),
+    /// Hand the open message to the system's print path.
+    Print,
     /// Discard the current listing's search filter.
     ClearSearch,
 }

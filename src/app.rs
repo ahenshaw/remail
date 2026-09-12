@@ -510,6 +510,7 @@ impl RemailApp {
             }
             Action::OpenUrl(url) => self.open_url(&url),
             Action::SaveAttachment(index) => self.save_attachment(index),
+            Action::Print => self.print_open_message(),
         }
     }
 
@@ -839,6 +840,53 @@ impl RemailApp {
         }
     }
 
+    /// Writes the open message out as a standalone document and hands it to
+    /// the system, which opens it in a browser where the print dialog lives.
+    fn print_open_message(&mut self) {
+        let Some(open) = &self.open_message else { return };
+        let (Some(body), Some(prepared)) = (&open.body, &open.prepared) else {
+            self.status = "Still loading that message".into();
+            return;
+        };
+
+        let document = crate::html::print::document(&open.envelope, body, prepared);
+        match self.write_print_file(&document) {
+            Ok(path) => match open::that_detached(&path) {
+                Ok(()) => self.status = "Opened for printing".into(),
+                Err(e) => self.status = format!("Could not open the print view: {e}"),
+            },
+            Err(e) => self.status = format!("Could not prepare the message: {e}"),
+        }
+    }
+
+    /// Writes a print document somewhere only this user can read it.
+    ///
+    /// The file holds the full text of a message, so it goes in the
+    /// application's own data directory rather than a world-readable temp
+    /// directory, and is owner-only. Earlier files are swept as we go: the
+    /// browser still needs this one after the call returns, so it cannot be
+    /// deleted immediately.
+    fn write_print_file(&self, document: &str) -> Result<std::path::PathBuf> {
+        use std::io::Write as _;
+
+        let directory = crate::config::data_dir()?.join("print");
+        std::fs::create_dir_all(&directory)?;
+        restrict(&directory, 0o700);
+        sweep_old_print_files(&directory);
+
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0);
+        let path = directory.join(format!("message-{stamp}.html"));
+
+        let mut file = std::fs::File::create(&path)?;
+        restrict(&path, 0o600);
+        file.write_all(document.as_bytes())?;
+        file.sync_all()?;
+        Ok(path)
+    }
+
     fn save_attachment(&mut self, index: usize) {
         let Some(open) = &self.open_message else { return };
         let Some(body) = &open.body else { return };
@@ -888,6 +936,37 @@ struct PendingToast {
     title: String,
     description: Option<String>,
     tone: BadgeTone,
+}
+
+/// Tightens permissions where the platform has them.
+fn restrict(path: &std::path::Path, mode: u32) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode));
+    }
+    #[cfg(not(unix))]
+    let _ = (path, mode);
+}
+
+/// Deletes print files left over from previous messages.
+///
+/// They are not removed as soon as the browser is launched because it has not
+/// necessarily read the file by then, so each print cleans up after the last.
+fn sweep_old_print_files(directory: &std::path::Path) {
+    const KEEP: Duration = Duration::from_secs(60 * 60);
+
+    let Ok(entries) = std::fs::read_dir(directory) else { return };
+    for entry in entries.flatten() {
+        let old = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .map(|at| at.elapsed().unwrap_or_default() > KEEP)
+            .unwrap_or(false);
+        if old {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
 }
 
 /// Builds row keys for a set of UIDs that all live in one mailbox.

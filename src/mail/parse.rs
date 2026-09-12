@@ -43,6 +43,7 @@ pub fn parse_body(raw: &[u8]) -> MessageBody {
         match part.content_id() {
             Some(cid) if !cid.is_empty() => inline.push(InlinePart {
                 content_id: cid.trim_matches(['<', '>']).to_string(),
+                mime,
                 data,
             }),
             _ => attachments.push(Attachment {
@@ -63,7 +64,11 @@ pub fn parse_body(raw: &[u8]) -> MessageBody {
             if let Some(cid) = part.content_id().filter(|c| !c.is_empty()) {
                 let cid = cid.trim_matches(['<', '>']).to_string();
                 if !inline.iter().any(|i| i.content_id == cid) {
-                    inline.push(InlinePart { content_id: cid, data: bin.to_vec() });
+                    inline.push(InlinePart {
+                        content_id: cid,
+                        mime: mime_of(part),
+                        data: bin.to_vec(),
+                    });
                 }
             }
         }

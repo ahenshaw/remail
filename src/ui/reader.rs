@@ -228,6 +228,18 @@ fn header(
             if ui.add(Button::new(label).size(ButtonSize::Small).outline()).clicked() {
                 *show_source = !*show_source;
             }
+            if ui
+                .add(
+                    // The icon font has no printer; the emoji font does.
+                    Button::new("\u{1F5A8} Print")
+                        .size(ButtonSize::Small)
+                        .outline(),
+                )
+                .on_hover_text("Open this message in your browser to print it")
+                .clicked()
+            {
+                *action = Some(Action::Print);
+            }
         });
     });
     ui.add_space(6.0);

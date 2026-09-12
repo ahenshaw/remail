@@ -14,6 +14,7 @@
 pub mod dom;
 pub mod layout;
 pub mod native;
+pub mod print;
 pub mod sanitize;
 
 #[cfg(feature = "servo")]
