@@ -6,7 +6,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use egui::{Align2, Color32, FontId, RichText, Sense, Ui, Vec2, pos2};
+use egui::{Color32, FontId, Rect, RichText, Sense, Ui, Vec2, pos2};
 use elegance::{Accent, Button, ButtonSize, Theme};
 
 use super::{Action, paint_truncated};
@@ -166,7 +166,8 @@ fn account_header(
 
     let visuals = ui.visuals();
     let painter = ui.painter();
-    let baseline = rect.top() + (row_height - font.size) * 0.5 - 1.0;
+    let text_font = FontId::new(font.size, font.family.clone());
+    let baseline = centre_text(painter, rect, &text_font);
 
     // Drawn rather than set: neither small triangle has a glyph in the
     // bundled fonts, and a disclosure arrow that renders as a box is worse
@@ -190,7 +191,7 @@ fn account_header(
         pos2(left, baseline),
         rect.right() - left - 4.0,
         name,
-        FontId::new(font.size, font.family.clone()),
+        text_font,
         visuals.strong_text_color(),
     );
 
@@ -234,16 +235,28 @@ fn mailbox_row(
     } else {
         visuals.text_color()
     };
-    let baseline = rect.top() + (row_height - font.size) * 0.5 - 1.0;
+    let text_font = FontId::new(font.size, font.family.clone());
+    let baseline = centre_text(painter, rect, &text_font);
 
     // Indentation is deliberately small: the pane may be very narrow.
     let icon_left = rect.left() + 6.0 + 9.0 * depth as f32;
-    painter.text(
-        pos2(icon_left, rect.center().y),
-        Align2::LEFT_CENTER,
-        mailbox.special.icon(),
-        FontId::proportional(font.size * 0.85),
+
+    // Laid out rather than drawn directly, so the label can be placed against
+    // the icon's real width. Emoji advance widths vary, and guessing one left
+    // the text touching some icons and adrift from others.
+    let icon = painter.layout_no_wrap(
+        mailbox.special.icon().to_string(),
+        FontId::proportional(super::icons::size_beside_text(font.size)),
         icon_color(mailbox.special, palette),
+    );
+    let icon_width = icon.size().x;
+    // Centred on the label's line, not on the row: the two were previously
+    // positioned by different rules, which is what left the icons sitting low.
+    let line_centre = baseline + line_height(painter, &text_font) * 0.5;
+    painter.galley(
+        pos2(icon_left, line_centre - icon.size().y * 0.5),
+        icon,
+        visuals.text_color(),
     );
 
     // Reserve room for the unread badge before laying out the name.
@@ -260,13 +273,13 @@ fn mailbox_row(
         right -= width + 6.0;
     }
 
-    let text_left = icon_left + font.size * 1.15;
+    let text_left = icon_left + icon_width + font.size * 0.34;
     let shortened = paint_truncated(
         painter,
         pos2(text_left, baseline),
         right - text_left,
         mailbox.display_name(),
-        FontId::new(font.size, font.family.clone()),
+        text_font,
         color,
     );
 
@@ -303,6 +316,21 @@ fn icon_color(special: SpecialUse, palette: &elegance::Palette) -> Color32 {
             Color32::from_rgb(0xdc, 0xb9, 0x77),
         ),
     }
+}
+
+/// The height of one line of text in this font, as laid out.
+fn line_height(painter: &egui::Painter, font: &FontId) -> f32 {
+    // Measured rather than taken from the nominal size, which ignores the
+    // ascent and descent the font actually asks for.
+    painter
+        .layout_no_wrap("Ag".to_string(), font.clone(), Color32::PLACEHOLDER)
+        .size()
+        .y
+}
+
+/// Top of a line of text centred vertically in `rect`.
+fn centre_text(painter: &egui::Painter, rect: Rect, font: &FontId) -> f32 {
+    rect.center().y - line_height(painter, font) * 0.5
 }
 
 /// A filled triangle pointing down when expanded, right when collapsed.

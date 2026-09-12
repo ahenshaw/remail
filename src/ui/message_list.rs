@@ -321,7 +321,9 @@ fn draw_row(
             pos2(right - 4.0, rect.bottom() - 8.0),
             Align2::RIGHT_BOTTOM,
             super::icons::ATTACHMENT,
-            font(size * 0.8),
+            // Undo the bundled emoji font's shrink, then step back down: a
+            // secondary marker, but not a speck.
+            font(super::icons::size_beside_text(size) * 0.82),
             weak,
         );
     }

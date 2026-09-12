@@ -26,3 +26,18 @@ pub const PRINTER: &str = "\u{1F5B6}";
 pub const IMAGE: &str = "\u{1F5BC}";
 /// Bullets for unordered lists, by nesting depth.
 pub const BULLETS: [&str; 3] = ["\u{2022}", "\u{25CB}", "\u{25AA}"];
+
+/// Nominal font size that draws an icon as tall as the text beside it.
+///
+/// epaint shrinks the bundled emoji fonts on load — `FontTweak { scale: 0.81 }`
+/// for Noto Emoji — so asking for the text's size yields a glyph about a fifth
+/// too small, and asking for less than that (as this once did) compounds it.
+/// The factor undoes that shrink and then reaches for the font's ascender, so
+/// an icon stands at least as tall as the tallest letter it sits beside.
+pub fn size_beside_text(text_size: f32) -> f32 {
+    const EMOJI_SHRINK: f32 = 0.81;
+    /// Roughly the ascender of a humanist sans, as a fraction of em.
+    const ASCENDER: f32 = 0.92;
+
+    text_size * ASCENDER / EMOJI_SHRINK
+}
