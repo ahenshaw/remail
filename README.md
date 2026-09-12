@@ -175,3 +175,7 @@ dropped and rebuilt.
 cargo test                 # unit tests
 cargo test -- --ignored    # adds a live TLS/greeting/LOGIN check against Gmail
 ```
+
+## License
+
+MIT. See [LICENSE](LICENSE).

@@ -2,6 +2,12 @@
 name = "remail"
 version = "0.1.0"
 edition = "2024"
+description = "A fast IMAP and Gmail client with an egui interface"
+repository = "https://github.com/ahenshaw/remail"
+license = "MIT"
+readme = "README.md"
+keywords = ["email", "imap", "gmail", "egui"]
+categories = ["email"]
 
 [features]
 default = []
