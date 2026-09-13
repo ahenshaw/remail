@@ -819,6 +819,7 @@ mod render_tests {
         let size: f32 =
             std::env::var("REMAIL_SIZE").ok().and_then(|v| v.parse().ok()).unwrap_or(14.0);
         let theme = crate::config::ThemeChoice::Outlook.theme();
+        let painted = theme.clone();
         let font = FontId::new(size, egui::FontFamily::Proportional);
         let row_height = (size * 1.5).round();
         println!("size {size}, row_height {row_height}");
@@ -832,51 +833,59 @@ mod render_tests {
             ("Engineering", SpecialUse::Normal),
         ];
 
-        crate::ui::raster::render(&out, 190.0, 6.0 * (row_height + 1.0) + 4.0, 5.0, move |ui| {
-            egui::CentralPanel::default().show(ui, |ui| {
-                ui.spacing_mut().item_spacing.y = 1.0;
-                let first_top = ui.min_rect().top();
-                let mut centres = Vec::new();
-                for (index, (name, special)) in names.iter().enumerate() {
-                    let mailbox = MailboxInfo {
-                        name: (*name).to_string(),
-                        delimiter: Some("/".into()),
-                        special: *special,
-                        selectable: true,
-                        unseen: 0,
-                    };
-                    mailbox_row(
-                        ui,
-                        RowInput {
-                            mailbox: &mailbox,
-                            depth: 0,
-                            selected: index % 2 == 0,
-                            has_children: false,
-                            collapsed: false,
-                            account: 1,
-                            font: &font,
-                            row_height,
-                            palette: &theme.palette,
-                        },
-                    );
-                    // Rows are laid out at a fixed pitch, so the centre of
-                    // each is arithmetic rather than something to read back.
-                    centres.push(first_top + index as f32 * (row_height + 1.0) + row_height * 0.5);
-                }
-
-                // A line through the middle of every row, so whether the
-                // contents straddle it is a matter of looking rather than
-                // of arithmetic.
-                if std::env::var("REMAIL_GUIDES").is_ok() {
-                    for y in centres {
-                        ui.painter().hline(
-                            ui.min_rect().x_range(),
-                            y,
-                            egui::Stroke::new(0.2, Color32::from_rgb(220, 0, 0)),
+        crate::ui::raster::render(
+            &out,
+            &theme,
+            190.0,
+            6.0 * (row_height + 1.0) + 4.0,
+            5.0,
+            move |ui| {
+                egui::CentralPanel::default().show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = 1.0;
+                    let first_top = ui.min_rect().top();
+                    let mut centres = Vec::new();
+                    for (index, (name, special)) in names.iter().enumerate() {
+                        let mailbox = MailboxInfo {
+                            name: (*name).to_string(),
+                            delimiter: Some("/".into()),
+                            special: *special,
+                            selectable: true,
+                            unseen: 0,
+                        };
+                        mailbox_row(
+                            ui,
+                            RowInput {
+                                mailbox: &mailbox,
+                                depth: 0,
+                                selected: index % 2 == 0,
+                                has_children: false,
+                                collapsed: false,
+                                account: 1,
+                                font: &font,
+                                row_height,
+                                palette: &painted.palette,
+                            },
                         );
+                        // Rows are laid out at a fixed pitch, so the centre of
+                        // each is arithmetic rather than something to read back.
+                        centres
+                            .push(first_top + index as f32 * (row_height + 1.0) + row_height * 0.5);
                     }
-                }
-            });
-        });
+
+                    // A line through the middle of every row, so whether the
+                    // contents straddle it is a matter of looking rather than
+                    // of arithmetic.
+                    if std::env::var("REMAIL_GUIDES").is_ok() {
+                        for y in centres {
+                            ui.painter().hline(
+                                ui.min_rect().x_range(),
+                                y,
+                                egui::Stroke::new(0.2, Color32::from_rgb(220, 0, 0)),
+                            );
+                        }
+                    }
+                });
+            },
+        );
     }
 }

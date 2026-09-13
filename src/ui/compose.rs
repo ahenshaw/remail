@@ -58,6 +58,18 @@ impl ComposeState {
     }
 }
 
+/// The colour to paint the compose window.
+///
+/// Text fields sit at one end of a theme's depth scale and plain surfaces at
+/// the other, and which end is which depends on the polarity: a light theme
+/// puts white fields on grey, a dark one puts near-black fields on a lighter
+/// card. The default window fill is the card colour either way, which on a
+/// light theme is the same white the fields are painted in — so the window
+/// and everything on it read as one flat sheet.
+fn window_fill(palette: &elegance::Palette) -> egui::Color32 {
+    if palette.is_dark { palette.card } else { palette.bg }
+}
+
 /// Smallest the window may be. Enough for the header fields, a few lines of
 /// body, and the action row, which has to stay on screen at every size.
 const MIN_HEIGHT: f32 = 320.0;
@@ -100,6 +112,10 @@ pub fn show(
         // screen and takes the Send button with it.
         .max_height((ctx.viewport_rect().height() - 60.0).max(MIN_HEIGHT))
         .collapsible(false)
+        .frame(
+            egui::Frame::window(&ctx.style_of(egui::Theme::from_dark_mode(theme.palette.is_dark)))
+                .fill(window_fill(&theme.palette)),
+        )
         .show(ctx, |ui| {
             action = body(ui, state, account, theme, lookup);
         });
@@ -469,6 +485,32 @@ mod compose_tests {
         }
     }
 
+    /// The fields stand out because the window behind them is a different
+    /// colour. That is the whole of it, and it holds only if the two colours
+    /// actually differ — in every theme, not just the one in use.
+    #[test]
+    fn the_window_stands_apart_from_its_fields() {
+        for choice in crate::config::ThemeChoice::all() {
+            let palette = choice.theme().palette;
+            assert_ne!(
+                window_fill(&palette),
+                palette.input_bg,
+                "{}: the window and its text fields are the same colour",
+                choice.label()
+            );
+        }
+    }
+
+    /// Both polarities, from opposite ends of the depth scale.
+    #[test]
+    fn the_window_recedes_on_a_light_theme_and_comes_forward_on_a_dark_one() {
+        let light = crate::config::ThemeChoice::Outlook.theme().palette;
+        assert_eq!(window_fill(&light), light.bg, "a light window recedes to the background");
+
+        let dark = crate::config::ThemeChoice::Slate.theme().palette;
+        assert_eq!(window_fill(&dark), dark.card, "a dark window comes forward to the card");
+    }
+
     #[test]
     fn a_window_too_small_to_type_in_still_gives_three_lines() {
         assert_eq!(editor_height(10.0, 16.0), 48.0);
@@ -484,13 +526,14 @@ mod compose_tests {
     fn render_long_reply() {
         let out = std::env::var("REMAIL_RENDER").unwrap_or_else(|_| "/tmp/compose.png".into());
         let theme = crate::config::ThemeChoice::Outlook.theme();
+        let painted = theme.clone();
 
         let quoted: String = (1..=80)
             .map(|n| format!("> line {n} of a message that goes on for a while\n"))
             .collect();
         let account = crate::config::AccountConfig::gmail(1, "andrew@example.com");
 
-        crate::ui::raster::render(&out, 720.0, 560.0, 1.0, move |ui| {
+        crate::ui::raster::render(&out, &theme, 720.0, 560.0, 1.0, move |ui| {
             let mut draft = crate::mail::Draft {
                 account: 1,
                 to: "walter@example.com".into(),
@@ -502,7 +545,28 @@ mod compose_tests {
             let mut state = ComposeState::new(draft);
             state.open = true;
             let lookup = |_: &str| Vec::new();
-            show(ui.ctx(), &mut state, Some(&account), &theme, &lookup);
+            show(ui.ctx(), &mut state, Some(&account), &painted, &lookup);
         });
+    }
+}
+
+#[cfg(test)]
+mod palette_probe {
+    #[test]
+    #[ignore = "diagnostic"]
+    fn probe_palettes() {
+        for choice in crate::config::ThemeChoice::all() {
+            let p = choice.theme().palette;
+            let hex = |c: egui::Color32| format!("#{:02x}{:02x}{:02x}", c.r(), c.g(), c.b());
+            println!(
+                "{:<10} dark {:<6} bg {}  card {}  input_bg {}  border {}",
+                choice.label(),
+                p.is_dark,
+                hex(p.bg),
+                hex(p.card),
+                hex(p.input_bg),
+                hex(p.border),
+            );
+        }
     }
 }

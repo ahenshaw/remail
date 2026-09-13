@@ -270,7 +270,8 @@ mod render_tests {
     #[ignore = "writes a file; run it when you want to look at something"]
     fn render_move_dialog() {
         let out = std::env::var("REMAIL_RENDER").unwrap_or_else(|_| "/tmp/move.png".into());
-        let theme = Theme::slate();
+        let theme = crate::config::ThemeChoice::Outlook.theme();
+        let painted = theme.clone();
         let mailboxes = vec![
             mailbox("INBOX", SpecialUse::Inbox, true),
             mailbox("Work", SpecialUse::Normal, true),
@@ -279,7 +280,7 @@ mod render_tests {
             mailbox("[Gmail]/Trash", SpecialUse::Trash, true),
         ];
 
-        crate::ui::raster::render(&out, 330.0, 300.0, 5.0, move |ui| {
+        crate::ui::raster::render(&out, &theme, 330.0, 300.0, 5.0, move |ui| {
             let mut dialog =
                 MoveDialog::new(1, vec![crate::mail::RowKey { mailbox: "INBOX".into(), uid: 1 }]);
             dialog.selected = 1;
@@ -290,7 +291,7 @@ mod render_tests {
                     folder_row(
                         ui,
                         Candidate { mailbox, matched: index == dialog.selected },
-                        &theme,
+                        &painted,
                         row_height,
                     );
                 }

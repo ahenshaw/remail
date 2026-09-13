@@ -328,13 +328,9 @@ pub mod raster {
     }
 
     impl Canvas {
-        fn new(width: usize, height: usize) -> Self {
-            Self {
-                width,
-                height,
-                pixels: vec![[0.96, 0.96, 0.96, 1.0]; width * height],
-                font: None,
-            }
+        fn new(width: usize, height: usize, ground: egui::Color32) -> Self {
+            let [r, g, b, _] = ground.to_normalized_gamma_f32();
+            Self { width, height, pixels: vec![[r, g, b, 1.0]; width * height], font: None }
         }
 
         fn set_font(&mut self, image: &egui::ColorImage) {
@@ -443,9 +439,21 @@ pub mod raster {
     }
 
     /// Renders `build` and writes it to `path`, magnified.
-    pub fn render(path: &str, width: f32, height: f32, scale: f32, build: impl Fn(&mut egui::Ui)) {
+    /// Renders `build` to a PNG at `path`, magnified by `scale`.
+    ///
+    /// `theme` is installed into the context, so widgets are painted the way
+    /// the application paints them rather than in whatever the default
+    /// happens to be — which is why several of these came out washed out.
+    pub fn render(
+        path: &str,
+        theme: &elegance::Theme,
+        width: f32,
+        height: f32,
+        scale: f32,
+        build: impl Fn(&mut egui::Ui),
+    ) {
         let ctx = egui::Context::default();
-        elegance::Theme::slate().install(&ctx);
+        theme.clone().install(&ctx);
 
         let raw = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
@@ -455,7 +463,8 @@ pub mod raster {
             ..Default::default()
         };
 
-        let mut canvas = Canvas::new((width * scale) as usize, (height * scale) as usize);
+        let mut canvas =
+            Canvas::new((width * scale) as usize, (height * scale) as usize, theme.palette.bg);
 
         // Two passes: the first uploads the font atlas, and only the first,
         // so the glyphs have to be taken from it rather than from the second.
