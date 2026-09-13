@@ -9,10 +9,12 @@ use std::ops::Range;
 
 use egui::{Align2, Color32, FontId, Rect, Sense, Stroke, Ui, Vec2, pos2};
 
-use super::{Action, format_date_short, paint_truncated};
+use super::{Action, DraggedMessages, format_date_short, paint_truncated};
+use crate::config::AccountId;
 use crate::mail::{Envelope, Flags, RowKey};
 
 pub struct ListInput<'a> {
+    pub account: AccountId,
     pub envelopes: &'a [Envelope],
     /// The keyboard-focused message.
     pub cursor: Option<RowKey>,
@@ -87,6 +89,9 @@ pub fn show(ui: &mut Ui, input: ListInput<'_>) -> ListOutput {
     // A menu choice has to land after the focus change it may depend on, so
     // it is held back rather than overwriting `action`.
     let mut pending = None;
+    // Set on the frame a drag begins, so the preview can be drawn once the
+    // row loop has finished rather than inside it.
+    let mut dragging: Option<Vec<RowKey>> = None;
 
     if input.envelopes.is_empty() {
         ui.add_space(32.0);
@@ -116,15 +121,30 @@ pub fn show(ui: &mut Ui, input: ListInput<'_>) -> ListOutput {
             let is_cursor = input.cursor.as_ref() == Some(&key);
             let is_selected = input.selection.contains(&key);
 
-            let (rect, response) =
-                ui.allocate_exact_size(Vec2::new(ui.available_width(), row_height), Sense::click());
+            let (rect, response) = ui.allocate_exact_size(
+                Vec2::new(ui.available_width(), row_height),
+                Sense::click_and_drag(),
+            );
+
+            // Dragging a row that is part of the selection takes the whole
+            // selection; dragging one outside it takes just that row, which
+            // is what the pointer is visibly on.
+            if response.drag_started() {
+                let rows = if input.selection.contains(&key) {
+                    input.selection.iter().cloned().collect()
+                } else {
+                    vec![key.clone()]
+                };
+                dragging = Some(rows.clone());
+                response.dnd_set_drag_payload(DraggedMessages { account: input.account, rows });
+            }
 
             if ui.is_rect_visible(rect) {
                 draw_row(
                     ui,
                     rect,
                     envelope,
-                    RowState { index, is_cursor, is_selected, response: &response },
+                    RowState { index, is_cursor, is_selected, hovered: response.hovered() },
                     &input,
                     metrics,
                 );
@@ -179,27 +199,112 @@ pub fn show(ui: &mut Ui, input: ListInput<'_>) -> ListOutput {
         }
     });
 
+    // The payload outlives the frame the drag started on, so the preview
+    // follows the pointer wherever it goes — including over the sidebar,
+    // which is the whole point.
+    let carried = dragging.or_else(|| {
+        egui::DragAndDrop::payload::<DraggedMessages>(ui.ctx()).map(|payload| payload.rows.clone())
+    });
+    if let Some(rows) = carried {
+        drag_preview(ui, &rows, &input, metrics);
+    }
+
     ListOutput { action, pending, visible }
 }
 
+/// Paints what is being dragged, following the pointer.
+///
+/// A translucent copy of the rows themselves rather than a generic badge:
+/// the thing being carried should look like the thing that was picked up.
+fn drag_preview(ui: &Ui, rows: &[RowKey], input: &ListInput<'_>, metrics: RowMetrics) {
+    let Some(pointer) = ui.ctx().pointer_interact_pos() else { return };
+
+    // At most three, offset like a stack of paper. Beyond that the count
+    // says more than another identical row would.
+    const STACK: usize = 3;
+    let carried: Vec<&Envelope> = rows
+        .iter()
+        .filter_map(|row| input.envelopes.iter().find(|e| &e.key() == row))
+        .take(STACK)
+        .collect();
+    if carried.is_empty() {
+        return;
+    }
+
+    let width = 320.0_f32.min(ui.available_width().max(220.0));
+    let offset = 4.0;
+    let depth = (carried.len() - 1) as f32 * offset;
+
+    // Below and right of the pointer, so the cursor is not sitting on top of
+    // the thing it is carrying.
+    let origin = pointer + egui::vec2(12.0, 8.0);
+
+    egui::Area::new(egui::Id::new("message-drag-preview"))
+        .order(egui::Order::Tooltip)
+        .fixed_pos(origin)
+        .interactable(false)
+        .show(ui.ctx(), |ui| {
+            ui.set_opacity(0.72);
+            let (rect, _) =
+                ui.allocate_exact_size(Vec2::new(width, metrics.height + depth), Sense::hover());
+
+            // Back to front, so the first row of the selection ends on top.
+            for (depth_index, envelope) in carried.iter().enumerate().rev() {
+                let shift = depth_index as f32 * offset;
+                let row = Rect::from_min_size(
+                    rect.min + Vec2::new(shift, shift),
+                    Vec2::new(width, metrics.height),
+                );
+                ui.painter().rect_filled(row, 4.0, input.surface);
+                draw_row(
+                    ui,
+                    row,
+                    envelope,
+                    RowState { index: 0, is_cursor: false, is_selected: true, hovered: false },
+                    input,
+                    metrics,
+                );
+            }
+
+            if rows.len() > 1 {
+                count_badge(ui, rect, rows.len(), input);
+            }
+        });
+}
+
+/// How many messages are being carried, when it is more than one.
+fn count_badge(ui: &Ui, rect: Rect, count: usize, input: &ListInput<'_>) {
+    let palette = &input.theme.palette;
+    let font = FontId::new(input.font.size * 0.9, input.font.family.clone());
+    let label = count.to_string();
+
+    let galley = ui.painter().layout_no_wrap(label, font, Color32::WHITE);
+    let padding = Vec2::new(7.0, 3.0);
+    let badge =
+        Rect::from_min_size(rect.left_top() - Vec2::new(6.0, 6.0), galley.size() + padding * 2.0);
+
+    ui.painter().rect_filled(badge, badge.height() * 0.5, palette.blue);
+    ui.painter().galley(badge.min + padding, galley, Color32::WHITE);
+}
+
 /// Where a row sits in the list and how the pointer and selection see it.
-struct RowState<'a> {
+struct RowState {
     /// Absolute index, so the stripe pattern does not shift while scrolling.
     index: usize,
     is_cursor: bool,
     is_selected: bool,
-    response: &'a egui::Response,
+    hovered: bool,
 }
 
 fn draw_row(
     ui: &Ui,
     rect: Rect,
     envelope: &Envelope,
-    state: RowState<'_>,
+    state: RowState,
     input: &ListInput<'_>,
     metrics: RowMetrics,
 ) {
-    let RowState { index, is_cursor, is_selected, response } = state;
+    let RowState { index, is_cursor, is_selected, hovered } = state;
     let visuals = ui.visuals();
     let painter = ui.painter();
     let family = input.font.family.clone();
@@ -220,7 +325,7 @@ fn draw_row(
         super::accent_tint(palette, 0.78)
     } else if is_selected {
         super::accent_tint(palette, 0.88)
-    } else if response.hovered() {
+    } else if hovered {
         super::accent_tint(palette, 0.94)
     } else {
         Color32::TRANSPARENT

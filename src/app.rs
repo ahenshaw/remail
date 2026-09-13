@@ -584,6 +584,9 @@ impl RemailApp {
                 // A click, not a drag, so there is nothing to debounce.
                 self.save_config();
             }
+            Action::DropOnFolder { account, mailbox, rows } => {
+                self.move_rows(account, rows, mailbox);
+            }
             Action::MoveTo => {
                 let Some((account, _)) = self.open_mailbox.clone() else { return };
                 let rows = self.targets();
@@ -1552,6 +1555,7 @@ impl RemailApp {
     ) -> Option<Action> {
         let visible = self.visible();
         let compact = self.config.read().unwrap().ui.compact_list;
+        let account = self.open_mailbox.as_ref().map(|(account, _)| *account).unwrap_or_default();
 
         let empty_message = if self.open_mailbox.is_none() {
             "Select a mailbox"
@@ -1575,6 +1579,7 @@ impl RemailApp {
         let output = message_list::show(
             ui,
             message_list::ListInput {
+                account,
                 envelopes: &visible,
                 cursor: self.cursor.clone(),
                 selection: &self.selection,

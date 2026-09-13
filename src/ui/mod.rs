@@ -94,6 +94,23 @@ pub enum Action {
     ToggleAccount(AccountId),
     /// Ask where to move the selected messages.
     MoveTo,
+    /// Messages were dropped on a folder in the sidebar.
+    DropOnFolder {
+        account: AccountId,
+        mailbox: String,
+        rows: Vec<crate::mail::RowKey>,
+    },
+}
+
+/// What a drag out of the message list carries.
+///
+/// The account travels with the rows because a move is one IMAP session
+/// acting on one server: dropping a message on another account's folder is
+/// not a move at all, and the sidebar has to be able to tell.
+#[derive(Debug, Clone)]
+pub struct DraggedMessages {
+    pub account: AccountId,
+    pub rows: Vec<crate::mail::RowKey>,
 }
 
 use chrono::{DateTime, Datelike, Local, TimeZone, Utc};

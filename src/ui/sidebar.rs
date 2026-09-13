@@ -140,6 +140,7 @@ pub fn show(ui: &mut Ui, input: SidebarInput<'_>) -> Option<Action> {
                             selected,
                             has_children,
                             collapsed: collapsed.contains(mailbox.name.as_str()),
+                            account: account.id,
                             font: &font,
                             row_height,
                             palette: &input.theme.palette,
@@ -224,6 +225,8 @@ fn account_header(
 enum RowOutcome {
     Open,
     Toggle,
+    /// Messages were dropped here.
+    Drop(Vec<crate::mail::RowKey>),
     MarkRead,
     NewChild,
     Rename,
@@ -236,6 +239,7 @@ impl RowOutcome {
         match self {
             RowOutcome::Open => Action::OpenMailbox { account, mailbox },
             RowOutcome::Toggle => Action::ToggleFolder { account, mailbox },
+            RowOutcome::Drop(rows) => Action::DropOnFolder { account, mailbox, rows },
             RowOutcome::MarkRead => Action::MarkFolderRead { account, mailbox },
             RowOutcome::NewChild => Action::NewSubfolder { account, parent: mailbox },
             RowOutcome::Rename => Action::RenameFolder { account, mailbox },
@@ -250,15 +254,43 @@ struct RowInput<'a> {
     selected: bool,
     has_children: bool,
     collapsed: bool,
+    /// Which account this row belongs to, so a drag from another one is not
+    /// offered a drop it cannot perform.
+    account: AccountId,
     font: &'a FontId,
     row_height: f32,
     palette: &'a elegance::Palette,
 }
 
+/// Whether a folder will take what is being dragged.
+///
+/// A move is one IMAP session acting on one server, so messages from another
+/// account are not droppable here at all — there is no IMAP command for it.
+/// A folder that cannot hold messages, or that already holds all of them, is
+/// left inert rather than lighting up and then refusing the drop.
+fn accepts_drop(
+    mailbox: &MailboxInfo,
+    account: AccountId,
+    payload: &super::DraggedMessages,
+) -> bool {
+    mailbox.selectable
+        && payload.account == account
+        && payload.rows.iter().any(|row| row.mailbox != mailbox.name)
+}
+
 /// Draws one mailbox line.
 fn mailbox_row(ui: &mut Ui, input: RowInput<'_>) -> Option<RowOutcome> {
-    let RowInput { mailbox, depth, selected, has_children, collapsed, font, row_height, palette } =
-        input;
+    let RowInput {
+        mailbox,
+        depth,
+        selected,
+        has_children,
+        collapsed,
+        font,
+        row_height,
+        palette,
+        account,
+    } = input;
 
     let (rect, response) =
         ui.allocate_exact_size(Vec2::new(ui.available_width(), row_height), Sense::click());
@@ -267,10 +299,22 @@ fn mailbox_row(ui: &mut Ui, input: RowInput<'_>) -> Option<RowOutcome> {
     }
 
     let mut outcome = None;
+
+    let hovering_drop = response
+        .dnd_hover_payload::<super::DraggedMessages>()
+        .is_some_and(|payload| accepts_drop(mailbox, account, &payload));
+    if let Some(payload) = response.dnd_release_payload::<super::DraggedMessages>()
+        && accepts_drop(mailbox, account, &payload)
+    {
+        outcome = Some(RowOutcome::Drop(payload.rows.clone()));
+    }
+
     let visuals = ui.visuals();
     let painter = ui.painter();
 
-    let background = if selected {
+    let background = if hovering_drop {
+        super::accent_tint(palette, 0.55)
+    } else if selected {
         super::accent_tint(palette, 0.80)
     } else if response.hovered() {
         super::accent_tint(palette, 0.92)
@@ -279,6 +323,16 @@ fn mailbox_row(ui: &mut Ui, input: RowInput<'_>) -> Option<RowOutcome> {
     };
     if background != Color32::TRANSPARENT {
         painter.rect_filled(rect.shrink2(Vec2::new(2.0, 0.0)), 3.0, background);
+    }
+    // An outline as well as a fill: on a row that is also the selected one,
+    // the fill alone would barely change.
+    if hovering_drop {
+        painter.rect_stroke(
+            rect.shrink2(Vec2::new(2.0, 0.0)),
+            3.0,
+            egui::Stroke::new(1.0, palette.blue),
+            egui::StrokeKind::Inside,
+        );
     }
 
     let unread = mailbox.unseen > 0;
@@ -485,5 +539,62 @@ fn state_label(state: ConnectionState) -> &'static str {
         ConnectionState::Connecting => "Connecting",
         ConnectionState::Failed => "Connection failed",
         ConnectionState::Offline => "Offline",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mail::{RowKey, SpecialUse};
+
+    fn folder(name: &str, selectable: bool) -> MailboxInfo {
+        MailboxInfo {
+            name: name.to_string(),
+            delimiter: Some("/".into()),
+            special: SpecialUse::Normal,
+            selectable,
+            unseen: 0,
+        }
+    }
+
+    fn dragged(account: AccountId, mailboxes: &[&str]) -> super::super::DraggedMessages {
+        super::super::DraggedMessages {
+            account,
+            rows: mailboxes
+                .iter()
+                .enumerate()
+                .map(|(index, mailbox)| RowKey {
+                    mailbox: (*mailbox).to_string(),
+                    uid: index as u32 + 1,
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn a_folder_takes_messages_from_elsewhere_in_its_account() {
+        assert!(accepts_drop(&folder("Work", true), 1, &dragged(1, &["INBOX"])));
+    }
+
+    #[test]
+    fn another_accounts_messages_are_not_droppable() {
+        // IMAP has no command for it: a move is one session on one server.
+        assert!(!accepts_drop(&folder("Work", true), 1, &dragged(2, &["INBOX"])));
+    }
+
+    #[test]
+    fn a_container_that_holds_no_messages_takes_none() {
+        assert!(!accepts_drop(&folder("[Gmail]", false), 1, &dragged(1, &["INBOX"])));
+    }
+
+    #[test]
+    fn a_folder_does_not_take_what_it_already_holds() {
+        assert!(!accepts_drop(&folder("Work", true), 1, &dragged(1, &["Work"])));
+    }
+
+    #[test]
+    fn a_mixed_drag_is_taken_for_the_rows_that_can_move() {
+        // Search results span folders; the ones already here simply stay.
+        assert!(accepts_drop(&folder("Work", true), 1, &dragged(1, &["Work", "INBOX"])));
     }
 }

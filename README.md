@@ -28,9 +28,11 @@ renderer for message bodies.
 - **A search language**: `subject:invoice from:jane -is:read since:2w`. The
   same query filters what is loaded as you type and compiles to an IMAP
   `SEARCH` when you press Enter.
-- **Move to a folder** by typing part of its name, from the toolbar, `m`, or
-  a right-click on the message. Rows leave the list at once and come back if
-  the server refuses.
+- **Move to a folder** by dragging onto the sidebar — one message or a whole
+  selection, carried as a translucent copy of the rows themselves. Or from
+  the toolbar, `m`, or a right-click, which open a folder picker you filter
+  by typing. Rows leave the list at once and come back if the server
+  refuses.
 - **Send as** any address configured for the account. A reply goes out from
   whichever of them the message was addressed to.
 
@@ -156,6 +158,13 @@ nothing.
 | `f` | forward | | `s` | toggle star |
 | `c` | compose | | `F5` | sync mailbox |
 | | | | `Esc` | clear search |
+
+Messages can also be dragged onto a folder in the sidebar, individually or as
+a selection. A folder lights up only if it will actually take the drop: one
+that holds no messages, one the messages are already in, and any folder
+belonging to a different account stay inert, since a move is one IMAP session
+acting on one server. A collapsed folder's children cannot be dropped on
+without expanding it first.
 
 `Ctrl+Enter` sends from the compose window. Typing in the search box filters
 the cached listing; pressing `Enter` escalates to a server-side `SEARCH`, which
