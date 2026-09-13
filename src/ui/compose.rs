@@ -58,6 +58,20 @@ impl ComposeState {
     }
 }
 
+/// Smallest the window may be. Enough for the header fields, a few lines of
+/// body, and the action row, which has to stay on screen at every size.
+const MIN_HEIGHT: f32 = 320.0;
+
+/// How tall the body editor may be, given the space left in the window.
+///
+/// Free of the UI so the one property that matters can be checked: the
+/// editor never asks for more room than the window has to give.
+fn editor_height(available: f32, line_height: f32) -> f32 {
+    // Three lines even in a window too small to hold them; below that the
+    // window's own minimum has already been violated.
+    available.max(line_height * 3.0)
+}
+
 /// Draws the compose window. Returns an action when the user asks for one.
 pub fn show(
     ctx: &Context,
@@ -80,7 +94,11 @@ pub fn show(
         .open(&mut open)
         .default_size([680.0, 520.0])
         .min_width(420.0)
-        .min_height(320.0)
+        .min_height(MIN_HEIGHT)
+        // A window sizes itself to its contents, and a reply quoting a long
+        // message has a lot of contents. Without a ceiling it grows past the
+        // screen and takes the Send button with it.
+        .max_height((ctx.viewport_rect().height() - 60.0).max(MIN_HEIGHT))
         .collapsible(false)
         .show(ctx, |ui| {
             action = body(ui, state, account, theme, lookup);
@@ -102,6 +120,36 @@ fn body(
     lookup: &dyn Fn(&str) -> Vec<Addr>,
 ) -> Option<ComposeAction> {
     let mut action = None;
+
+    // The action row leads, so that no amount of quoted text can push Send
+    // out of reach. It is also the first thing the eye lands on, which for a
+    // window whose whole purpose is to send something is the right order.
+    ui.horizontal(|ui| {
+        let ready = account.is_some() && !state.draft.to.trim().is_empty() && !state.sending;
+        if ui
+            .add(
+                Button::new(format!("{} Send", glyphs::UPLOAD))
+                    .accent(Accent::Blue)
+                    .enabled(ready)
+                    .loading(state.sending),
+            )
+            .clicked()
+        {
+            action = Some(ComposeAction::Send);
+        }
+        if ui.add(Button::new(format!("{} Attach", glyphs::PLUS)).outline()).clicked() {
+            action = Some(ComposeAction::AttachFile);
+        }
+
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui.add(Button::new("Discard").outline().accent(Accent::Red)).clicked() {
+                action = Some(ComposeAction::Close);
+            }
+            ui.label(theme.faint_text("Ctrl+Enter to send"));
+        });
+    });
+    ui.separator();
+    ui.add_space(4.0);
 
     ui.horizontal(|ui| {
         ui.label(theme.faint_text("From"));
@@ -172,36 +220,25 @@ fn body(
         ui.add_space(6.0);
     }
 
-    // Size the editor to the space left after the action row, in whole lines.
+    // The editor is the only part of the window that grows without limit, so
+    // it takes the space that is left and scrolls inside it. `desired_rows`
+    // is a minimum, not a maximum: left to itself a `TextEdit` is as tall as
+    // its text, which is how the action row ended up below the bottom of the
+    // screen on a long reply.
     let line_height = ui.text_style_height(&egui::TextStyle::Body);
-    let rows = (((ui.available_height() - 52.0) / line_height) as usize).max(6);
-    ui.add(TextArea::new(&mut state.draft.body).rows(rows).hint("Write your message\u{2026}"));
-
-    ui.add_space(8.0);
-    ui.horizontal(|ui| {
-        let ready = account.is_some() && !state.draft.to.trim().is_empty() && !state.sending;
-        if ui
-            .add(
-                Button::new(format!("{} Send", glyphs::UPLOAD))
-                    .accent(Accent::Blue)
-                    .enabled(ready)
-                    .loading(state.sending),
-            )
-            .clicked()
-        {
-            action = Some(ComposeAction::Send);
-        }
-        if ui.add(Button::new(format!("{} Attach", glyphs::PLUS)).outline()).clicked() {
-            action = Some(ComposeAction::AttachFile);
-        }
-
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui.add(Button::new("Discard").outline().accent(Accent::Red)).clicked() {
-                action = Some(ComposeAction::Close);
-            }
-            ui.label(theme.faint_text("Ctrl+Enter to send"));
+    let height = editor_height(ui.available_height(), line_height);
+    let rows = ((height / line_height) as usize).max(1);
+    egui::ScrollArea::vertical()
+        .id_salt("compose-body")
+        .max_height(height)
+        // Fill the space even when the draft is short, so the editor is the
+        // size of the window rather than the size of what is in it.
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            ui.add(
+                TextArea::new(&mut state.draft.body).rows(rows).hint("Write your message\u{2026}"),
+            );
         });
-    });
 
     // Ctrl+Enter sends from anywhere in the window, including the body editor.
     if ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Enter))
@@ -413,5 +450,59 @@ mod tests {
         let parsed = crate::mail::parse::parse_address_list(&completed);
         assert_eq!(parsed.len(), 1, "the name's comma split the address");
         assert_eq!(parsed[0].email, "jane@example.com");
+    }
+}
+
+#[cfg(test)]
+mod compose_tests {
+    use super::*;
+
+    #[test]
+    fn the_editor_never_asks_for_more_room_than_there_is() {
+        let line = 16.0;
+        for available in [40.0_f32, 120.0, 480.0, 2000.0] {
+            let height = editor_height(available, line);
+            assert!(
+                height <= available.max(line * 3.0),
+                "{available} available, editor wanted {height}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_window_too_small_to_type_in_still_gives_three_lines() {
+        assert_eq!(editor_height(10.0, 16.0), 48.0);
+    }
+
+    /// Draws the window with a reply's worth of quoted text, which is the
+    /// case that used to push Send off the bottom.
+    ///
+    ///     REMAIL_RENDER=/tmp/compose.png \
+    ///         cargo test render_long_reply -- --ignored
+    #[test]
+    #[ignore = "writes a file; run it when you want to look at something"]
+    fn render_long_reply() {
+        let out = std::env::var("REMAIL_RENDER").unwrap_or_else(|_| "/tmp/compose.png".into());
+        let theme = crate::config::ThemeChoice::Outlook.theme();
+
+        let quoted: String = (1..=80)
+            .map(|n| format!("> line {n} of a message that goes on for a while\n"))
+            .collect();
+        let account = crate::config::AccountConfig::gmail(1, "andrew@example.com");
+
+        crate::ui::raster::render(&out, 720.0, 560.0, 1.0, move |ui| {
+            let mut draft = crate::mail::Draft {
+                account: 1,
+                to: "walter@example.com".into(),
+                subject: "Re: Contact".into(),
+                body: format!("\n\nOn Friday, Walter wrote:\n{quoted}"),
+                ..Default::default()
+            };
+            draft.from = "andrew@example.com".into();
+            let mut state = ComposeState::new(draft);
+            state.open = true;
+            let lookup = |_: &str| Vec::new();
+            show(ui.ctx(), &mut state, Some(&account), &theme, &lookup);
+        });
     }
 }
