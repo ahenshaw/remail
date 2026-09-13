@@ -304,7 +304,7 @@ fn account_header(
     let metrics = TextMetrics::measure(painter, &text_font);
     let top = rect.center().y - metrics.line_height * 0.5;
     // Everything on this row hangs off the text's line, not the row's middle.
-    let mark_centre = metrics.centre_for(top, font.size * 0.72);
+    let mark_centre = metrics.caps_centre(top);
 
     disclosure_arrow(
         painter,
@@ -484,10 +484,12 @@ fn mailbox_row(ui: &mut Ui, input: RowInput<'_>) -> RowResult {
         color,
     );
 
-    let baseline = top + metrics.baseline;
     super::icons::draw_mailbox(
         painter,
-        Rect::from_min_size(pos2(icon_left, baseline - icon_size), Vec2::splat(icon_size)),
+        Rect::from_center_size(
+            pos2(icon_left + icon_size * 0.5, metrics.caps_centre(top)),
+            Vec2::splat(icon_size),
+        ),
         mailbox.special,
         icon_color(mailbox.special, palette),
     );
@@ -495,7 +497,7 @@ fn mailbox_row(ui: &mut Ui, input: RowInput<'_>) -> RowResult {
     if has_children {
         disclosure_arrow(
             painter,
-            pos2(indent + arrow_width * 0.5, metrics.centre_for(top, icon_size)),
+            pos2(indent + arrow_width * 0.5, metrics.caps_centre(top)),
             font.size * 0.26,
             !collapsed,
             visuals.weak_text_color(),
@@ -566,28 +568,32 @@ struct TextMetrics {
     line_height: f32,
     /// Baseline, measured down from the top of the line box.
     baseline: f32,
+    /// Height of a capital letter, measured from the ink of an "X".
+    cap_height: f32,
 }
 
 impl TextMetrics {
-    /// The y that a mark of `height` should be centred on so it sits on the
-    /// baseline, like a capital letter.
+    /// The y that a mark beside the text should be centred on.
     ///
-    /// Not the row's centre: a line box reserves a descender's worth of space
-    /// below the baseline, so its middle is well under the letters.
-    fn centre_for(&self, top: f32, height: f32) -> f32 {
-        top + self.baseline - height * 0.5
+    /// The middle of the capitals, which is what the eye reads as the middle
+    /// of a line of text. Two other answers are available and both are wrong:
+    /// the middle of the line box sits well under the letters, because the
+    /// box reserves a descender's worth of space that most words never use;
+    /// and standing a mark on the baseline leaves it riding high whenever it
+    /// is taller than a capital, which an icon usually is.
+    fn caps_centre(&self, top: f32) -> f32 {
+        top + self.baseline - self.cap_height * 0.5
     }
 
     fn measure(painter: &egui::Painter, font: &FontId) -> Self {
         let galley = painter.layout_no_wrap("X".to_string(), font.clone(), Color32::PLACEHOLDER);
-        let baseline = galley
-            .rows
-            .first()
-            .and_then(|row| row.row.glyphs.first().map(|glyph| row.pos.y + glyph.pos.y))
-            // A font with no glyph for "X" is not worth a special case; the
-            // ascender of a typical face is close enough to keep going.
-            .unwrap_or(font.size * 0.8);
-        Self { line_height: galley.size().y, baseline }
+        let glyph = galley.rows.first().and_then(|row| {
+            row.row.glyphs.first().map(|glyph| (row.pos.y + glyph.pos.y, glyph.uv_rect.size.y))
+        });
+        // A font with no glyph for "X" is not worth a special case; the
+        // proportions of a typical face are close enough to keep going.
+        let (baseline, cap_height) = glyph.unwrap_or((font.size * 0.8, font.size * 0.7));
+        Self { line_height: galley.size().y, baseline, cap_height }
     }
 }
 
@@ -685,6 +691,48 @@ mod tests {
                 })
                 .collect(),
         }
+    }
+
+    /// Ubuntu-Light at 14 px, which is what egui bundles and what the
+    /// sidebar uses by default. Measured from the laid-out glyphs.
+    fn ubuntu_light_14() -> TextMetrics {
+        TextMetrics { line_height: 16.0, baseline: 13.0, cap_height: 10.0 }
+    }
+
+    #[test]
+    fn the_line_of_text_sits_in_the_middle_of_its_row() {
+        let metrics = ubuntu_light_14();
+        let row_height = (14.0_f32 * 1.5).round();
+        let top = row_height * 0.5 - metrics.line_height * 0.5;
+
+        // The capitals, which is what the eye reads as the line.
+        let above = top + metrics.baseline - metrics.cap_height;
+        let below = row_height - (top + metrics.baseline);
+        assert!((above - below).abs() < 0.01, "{above} above, {below} below");
+    }
+
+    #[test]
+    fn an_icon_taller_than_the_capitals_is_still_centred_in_the_row() {
+        // Standing it on the baseline left 2.06 px above and 5.50 below,
+        // which is what made the highlight look off-centre.
+        let metrics = ubuntu_light_14();
+        let row_height = (14.0_f32 * 1.5).round();
+        let top = row_height * 0.5 - metrics.line_height * 0.5;
+        let icon = 14.0 * 0.96;
+        assert!(icon > metrics.cap_height, "the case worth testing");
+
+        let centre = metrics.caps_centre(top);
+        let above = centre - icon * 0.5;
+        let below = row_height - (centre + icon * 0.5);
+        assert!((above - below).abs() < 0.01, "{above} above, {below} below");
+    }
+
+    #[test]
+    fn the_icon_and_the_capitals_share_a_centre() {
+        let metrics = ubuntu_light_14();
+        let top = 2.5;
+        let caps_centre = top + metrics.baseline - metrics.cap_height * 0.5;
+        assert!((metrics.caps_centre(top) - caps_centre).abs() < 0.01);
     }
 
     #[test]
