@@ -1508,9 +1508,17 @@ impl RemailApp {
             }
         }
 
-        let clear_width = if self.search_results.is_some() { 34.0 } else { 0.0 };
-        // Take the space that is actually left rather than a fixed width,
-        // which is what overflowed into the scope selector before.
+        // Anything to clear: a query being typed, results on screen, or both.
+        // A filter that has only run locally is still something the user has
+        // to undo, and the only way to undo it was to select the text and
+        // delete it — the button appeared once the search had reached the
+        // server and not before.
+        let clearable = !self.search.is_empty() || self.search_results.is_some();
+        // Reserved whether or not the button is there, so the field does not
+        // jump a button's width narrower on the first keystroke and back on
+        // the last. Take the space that is actually left rather than a fixed
+        // width, which is what overflowed into the scope selector before.
+        let clear_width = 34.0;
         let width = (ui.available_width() - clear_width - 8.0).clamp(90.0, 320.0);
 
         let search = ui
@@ -1525,6 +1533,15 @@ impl RemailApp {
                     .desired_width(width),
             )
             .on_hover_text(SEARCH_SYNTAX);
+        // Escape clears from inside the field. The global shortcut cannot:
+        // it stands down whenever a text field holds the keyboard, which is
+        // exactly when there is a search to abandon. Focus goes back to the
+        // list, since the point of the key is to leave the field.
+        if search.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            search.surrender_focus();
+            action = Some(Action::ClearSearch);
+        }
+
         // Enter escalates from the local filter to a server search, which
         // reaches messages that are not cached locally.
         if search.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
@@ -1539,10 +1556,14 @@ impl RemailApp {
             }
         }
 
-        if self.search_results.is_some()
+        if clearable
             && ui
                 .add(Button::new(glyphs::X.to_string()).size(ButtonSize::Small).outline())
-                .on_hover_text("Clear search results")
+                .on_hover_text(if self.search_results.is_some() {
+                    "Clear search results (Esc)"
+                } else {
+                    "Clear search (Esc)"
+                })
                 .clicked()
         {
             action = Some(Action::ClearSearch);
