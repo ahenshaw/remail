@@ -332,6 +332,31 @@ impl Store {
         Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
 
+    /// UIDs in a mailbox whose cached envelope never got its headers.
+    ///
+    /// A sync reads only UIDs above the high-water mark, so a row that was
+    /// stored badly would otherwise keep its placeholder subject for as long
+    /// as the cache lives. Collecting them lets the next sync ask for those
+    /// UIDs by name and replace them.
+    pub fn unparseable_uids(
+        &self,
+        account: AccountId,
+        mailbox: &str,
+        limit: u32,
+    ) -> Result<Vec<u32>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT uid FROM envelope
+             WHERE account = ?1 AND mailbox = ?2 AND subject = ?3
+             ORDER BY uid DESC LIMIT ?4",
+        )?;
+        let rows = stmt.query_map(
+            params![account, mailbox, crate::mail::parse::UNPARSEABLE_SUBJECT, limit],
+            |r| r.get(0),
+        )?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
     pub fn delete_envelopes(&self, account: AccountId, mailbox: &str, uids: &[u32]) -> Result<()> {
         if uids.is_empty() {
             return Ok(());
@@ -674,6 +699,49 @@ mod tests {
 
     fn store() -> Store {
         Store::open_memory().expect("in-memory store")
+    }
+
+    #[test]
+    fn finds_envelopes_that_were_cached_without_headers() {
+        let store = store();
+        let broken = Envelope {
+            uid: 41347,
+            subject: crate::mail::parse::UNPARSEABLE_SUBJECT.to_string(),
+            ..Default::default()
+        };
+        let good = Envelope { uid: 41348, subject: "Real subject".into(), ..Default::default() };
+        store.save_envelopes(1, "INBOX", &[broken, good]).unwrap();
+
+        assert_eq!(store.unparseable_uids(1, "INBOX", 200).unwrap(), vec![41347]);
+        // Another mailbox, and another account, are not this one's problem.
+        assert!(store.unparseable_uids(1, "Archive", 200).unwrap().is_empty());
+        assert!(store.unparseable_uids(2, "INBOX", 200).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_repaired_envelope_is_no_longer_listed() {
+        let store = store();
+        let uid = 41347;
+        store
+            .save_envelopes(
+                1,
+                "INBOX",
+                &[Envelope {
+                    uid,
+                    subject: crate::mail::parse::UNPARSEABLE_SUBJECT.to_string(),
+                    ..Default::default()
+                }],
+            )
+            .unwrap();
+        store
+            .save_envelopes(
+                1,
+                "INBOX",
+                &[Envelope { uid, subject: "FW: the map".into(), ..Default::default() }],
+            )
+            .unwrap();
+
+        assert!(store.unparseable_uids(1, "INBOX", 200).unwrap().is_empty());
     }
 
     #[test]

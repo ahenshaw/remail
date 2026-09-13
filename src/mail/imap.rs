@@ -541,7 +541,14 @@ fn guess_special_use(name: &str) -> SpecialUse {
 
 fn envelope_from_fetch(fetch: &Fetch, mailbox: &str) -> Option<Envelope> {
     let uid = fetch.uid?;
-    let header = fetch.header().unwrap_or(b"");
+    // A FETCH that carries no header section is not an answer to this query.
+    // Servers interleave unsolicited FETCH updates — a flag that changed
+    // while we were reading — into the responses for the range we asked
+    // about, and those carry UID and FLAGS alone. Parsing one yields an
+    // envelope with no subject, sender or date, which then overwrites the
+    // real one in the cache and stays there: sync only ever looks above the
+    // highest UID it has seen, so the row is never fetched again.
+    let header = fetch.header().filter(|header| !header.is_empty())?;
     let mut envelope = parse::parse_envelope(uid, header);
     envelope.mailbox = mailbox.to_string();
     envelope.flags = flags_from_fetch(fetch);

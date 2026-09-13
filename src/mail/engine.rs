@@ -696,6 +696,48 @@ impl AccountWorker {
         }
     }
 
+    /// Re-fetches envelopes that were cached without their headers.
+    ///
+    /// Nothing else would: a sync asks only for UIDs above the high-water
+    /// mark, so a row stored from a FETCH that carried no header section
+    /// keeps its placeholder subject for the life of the cache. These are
+    /// asked for by UID, so the cost is proportional to the damage — nothing
+    /// at all in the ordinary case, where there is none.
+    async fn repair_envelopes(&mut self, mailbox: &str) -> Result<()> {
+        const MAX_REPAIRS: u32 = 200;
+
+        let account = self.account;
+        let uids = self.store.unparseable_uids(account, mailbox, MAX_REPAIRS)?;
+        if uids.is_empty() {
+            return Ok(());
+        }
+
+        tracing::info!(account, mailbox, count = uids.len(), "re-fetching headerless envelopes");
+        let set = imap::uid_set(&uids);
+
+        let connection = self.connection.as_mut().expect("connected by the caller");
+        let repaired: Vec<Envelope> = connection
+            .fetch_envelopes(&set)
+            .await?
+            .into_iter()
+            // The server may no longer have them, and a second failure must
+            // not rewrite the row with the same placeholder.
+            .filter(|e| e.subject != parse::UNPARSEABLE_SUBJECT)
+            .collect();
+        if repaired.is_empty() {
+            return Ok(());
+        }
+
+        self.store.save_envelopes(account, mailbox, &repaired)?;
+        self.record_contacts(self.is_outgoing(mailbox), &repaired);
+        self.events.emit(Event::Envelopes {
+            account,
+            mailbox: mailbox.to_string(),
+            envelopes: repaired,
+        });
+        Ok(())
+    }
+
     /// Reconciles one mailbox with the server: new messages, flag changes and
     /// deletions.
     async fn sync(&mut self, mailbox: &str) -> Result<()> {
@@ -737,6 +779,8 @@ impl AccountWorker {
                 envelopes: fresh.clone(),
             });
         }
+
+        self.repair_envelopes(mailbox).await?;
 
         self.store.set_mailbox_state(
             account,

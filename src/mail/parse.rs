@@ -84,11 +84,15 @@ pub fn parse_body(raw: &[u8]) -> MessageBody {
     MessageBody { html, text, attachments, inline, headers, raw_size: raw.len() }
 }
 
+/// The subject shown for a message whose headers could not be read, and the
+/// marker that lets a later sync find the row again and try once more.
+pub const UNPARSEABLE_SUBJECT: &str = "(unparseable message)";
+
 /// Parses the header block of a message into an envelope. Used when the server
 /// gives us headers rather than a structured `ENVELOPE` response.
 pub fn parse_envelope(uid: u32, raw: &[u8]) -> Envelope {
     let Some(msg) = MessageParser::default().parse(raw) else {
-        return Envelope { uid, subject: "(unparseable message)".into(), ..Default::default() };
+        return Envelope { uid, subject: UNPARSEABLE_SUBJECT.into(), ..Default::default() };
     };
     envelope_from_message(uid, &msg)
 }
@@ -345,6 +349,30 @@ mod tests {
         assert!(references_cid("<img src='CID:logo'>", "logo"));
         assert!(!references_cid("<img src=\"cid:logo2\">", "logo"));
         assert!(!references_cid("<p>cid:other</p>", "logo"));
+    }
+
+    /// The placeholder an empty header block produces is what `sync` looks
+    /// for later to find rows worth fetching again, so it has to stay put.
+    #[test]
+    fn an_empty_header_block_is_marked_unparseable() {
+        assert_eq!(parse_envelope(41347, b"").subject, UNPARSEABLE_SUBJECT);
+        assert!(parse_envelope(41347, b"").from.is_empty());
+    }
+
+    /// Only the requested fields come back from `HEADER.FIELDS`, with no body
+    /// behind them; that is a whole envelope, not a broken one.
+    #[test]
+    fn reads_an_envelope_from_header_fields_alone() {
+        let raw = b"From: <micheletoei@example.com>\r\n\
+                    Subject: FW: Fw: The Harbor Point Interactive Map\r\n\
+                    Date: Sun, 13 Sep 2026 13:04:06 -0400\r\n\
+                    Content-Type: multipart/mixed;\r\n\
+                    \tboundary=\"----=_NextPart_000_02F0\"\r\n\
+                    \r\n";
+        let env = parse_envelope(41347, raw);
+        assert_eq!(env.subject, "FW: Fw: The Harbor Point Interactive Map");
+        assert_eq!(env.from[0].email, "micheletoei@example.com");
+        assert_ne!(env.date, 0);
     }
 
     #[test]
