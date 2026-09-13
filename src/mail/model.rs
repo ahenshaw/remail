@@ -147,6 +147,18 @@ impl Envelope {
         display_folder(leaf)
     }
 
+    /// Whether this is a message the user sent, rather than received.
+    ///
+    /// Two ways to know it, and both are needed. Usually the mailbox it came
+    /// from is one the server flags as Sent or Drafts, which is what
+    /// `outgoing` holds. But a whole-account search on Gmail runs against
+    /// All Mail and finds sent and received alike there, so every result
+    /// carries the same mailbox; what still separates them is the label,
+    /// which the fetch keeps as the folder hint.
+    pub fn is_outgoing(&self, outgoing: &std::collections::BTreeSet<String>) -> bool {
+        outgoing.contains(&self.mailbox) || matches!(self.folder_hint.as_str(), "Sent" | "Drafts")
+    }
+
     pub fn key(&self) -> RowKey {
         RowKey::new(self.mailbox.clone(), self.uid)
     }
@@ -451,6 +463,56 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(envelope.folder_label(), "Receipts");
+    }
+
+    #[test]
+    fn a_sent_mailbox_marks_a_message_as_outgoing() {
+        let outgoing: std::collections::BTreeSet<String> =
+            ["[Gmail]/Sent Mail".to_string(), "[Gmail]/Drafts".to_string()].into();
+
+        let sent = Envelope { mailbox: "[Gmail]/Sent Mail".into(), ..Default::default() };
+        assert!(sent.is_outgoing(&outgoing));
+
+        let received = Envelope { mailbox: "INBOX".into(), ..Default::default() };
+        assert!(!received.is_outgoing(&outgoing));
+    }
+
+    /// A whole-account search on Gmail runs against All Mail, so every result
+    /// carries that mailbox and only the label says where it really lives.
+    #[test]
+    fn a_gmail_label_marks_a_search_result_as_outgoing() {
+        let outgoing: std::collections::BTreeSet<String> =
+            ["[Gmail]/Sent Mail".to_string(), "[Gmail]/Drafts".to_string()].into();
+
+        let found_in_all_mail = Envelope {
+            mailbox: "[Gmail]/All Mail".into(),
+            folder_hint: "Sent".into(),
+            ..Default::default()
+        };
+        assert!(found_in_all_mail.is_outgoing(&outgoing));
+
+        let draft = Envelope {
+            mailbox: "[Gmail]/All Mail".into(),
+            folder_hint: "Drafts".into(),
+            ..Default::default()
+        };
+        assert!(draft.is_outgoing(&outgoing));
+
+        // Received mail found the same way is not, nor is a user label that
+        // happens to sit in the same folder.
+        let received = Envelope {
+            mailbox: "[Gmail]/All Mail".into(),
+            folder_hint: "Inbox".into(),
+            ..Default::default()
+        };
+        assert!(!received.is_outgoing(&outgoing));
+
+        let labelled = Envelope {
+            mailbox: "[Gmail]/All Mail".into(),
+            folder_hint: "Receipts".into(),
+            ..Default::default()
+        };
+        assert!(!labelled.is_outgoing(&outgoing));
     }
 
     #[test]

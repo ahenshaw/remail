@@ -24,7 +24,7 @@ pub struct ListInput<'a> {
     pub show_folder: bool,
     /// Mailboxes holding mail the user sent. A row from one of these shows
     /// who the message went to, since the sender is the account itself and
-    /// says nothing. Kept per row rather than per pane because a search
+    /// says nothing. Tested per row rather than per pane because a search
     /// spans folders, and a result from Sent wants the same treatment there.
     pub outgoing: &'a BTreeSet<String>,
     pub theme: &'a elegance::Theme,
@@ -387,7 +387,7 @@ fn draw_row(
         width + 10.0
     };
 
-    let sender = if input.outgoing.contains(&envelope.mailbox) {
+    let sender = if envelope.is_outgoing(input.outgoing) {
         recipients(envelope)
     } else {
         envelope
