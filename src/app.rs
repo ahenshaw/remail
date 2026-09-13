@@ -98,6 +98,8 @@ pub struct RemailApp {
     /// A folder create, rename or delete awaiting confirmation.
     folder_edit: Option<FolderEdit>,
     move_to: Option<crate::ui::move_to::MoveDialog>,
+    /// Folders a drag is holding open. Never written to the config.
+    spring: crate::ui::sidebar::SpringLoad,
     settings_open: bool,
 
     status: String,
@@ -155,6 +157,7 @@ impl RemailApp {
             accounts_dialog: None,
             folder_edit: None,
             move_to: None,
+            spring: crate::ui::sidebar::SpringLoad::default(),
             settings_open: false,
             status: String::new(),
             pending_toasts: Vec::new(),
@@ -1255,6 +1258,7 @@ impl eframe::App for RemailApp {
                         selected,
                         font: folders_font.clone(),
                         theme: &self.theme,
+                        spring: &mut self.spring,
                     },
                 );
                 action = action.take().or(found);

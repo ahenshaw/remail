@@ -163,8 +163,10 @@ Messages can also be dragged onto a folder in the sidebar, individually or as
 a selection. A folder lights up only if it will actually take the drop: one
 that holds no messages, one the messages are already in, and any folder
 belonging to a different account stay inert, since a move is one IMAP session
-acting on one server. A collapsed folder's children cannot be dropped on
-without expanding it first.
+acting on one server. Resting on a collapsed folder opens it, so a nested
+destination can be reached without breaking off the drag; anything opened
+that way closes again when the drag ends, and the config never hears about
+it.
 
 `Ctrl+Enter` sends from the compose window. Typing in the search box filters
 the cached listing; pressing `Enter` escalates to a server-side `SEARCH`, which

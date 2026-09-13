@@ -33,12 +33,89 @@ pub struct SidebarInput<'a> {
     pub selected: Option<(AccountId, &'a str)>,
     pub font: FontId,
     pub theme: &'a Theme,
+    pub spring: &'a mut SpringLoad,
+}
+
+/// Folders held open by hovering over them during a drag.
+///
+/// Transient by construction: a drag is a way to reach a folder, not a
+/// statement about how the sidebar should look. Nothing here reaches the
+/// config, and everything it opened closes again when the drag ends — which
+/// is why it is a separate set rather than a write to `collapsed_folders`.
+#[derive(Default)]
+pub struct SpringLoad {
+    /// The folder the pointer is resting on, and the time it arrived.
+    dwelling: Option<(AccountId, String, f64)>,
+    /// What this drag has opened so far.
+    opened: HashSet<(AccountId, String)>,
+}
+
+/// What a dwell is waiting for.
+enum Dwell {
+    /// Still waiting; repaint after this long even if nothing moves.
+    Waiting(std::time::Duration),
+    /// The folder just opened.
+    Opened,
+}
+
+impl SpringLoad {
+    /// How long the pointer must rest before a folder opens. Long enough not
+    /// to fire while crossing a folder on the way somewhere else, short
+    /// enough that waiting for it does not feel like being stuck.
+    const DWELL: f64 = 0.45;
+
+    fn is_open(&self, account: AccountId, mailbox: &str) -> bool {
+        self.opened.iter().any(|(held, name)| *held == account && name == mailbox)
+    }
+
+    /// Records the pointer resting on a closed folder.
+    fn dwell(&mut self, account: AccountId, mailbox: &str, now: f64) -> Dwell {
+        match &self.dwelling {
+            Some((held, name, since)) if *held == account && name == mailbox => {
+                let left = Self::DWELL - (now - since);
+                if left <= 0.0 {
+                    self.opened.insert((account, mailbox.to_string()));
+                    self.dwelling = None;
+                    Dwell::Opened
+                } else {
+                    Dwell::Waiting(std::time::Duration::from_secs_f64(left))
+                }
+            }
+            // A different folder, or none: the clock starts here.
+            _ => {
+                self.dwelling = Some((account, mailbox.to_string(), now));
+                Dwell::Waiting(std::time::Duration::from_secs_f64(Self::DWELL))
+            }
+        }
+    }
+
+    /// The pointer is not resting on any closed folder.
+    fn idle(&mut self) {
+        self.dwelling = None;
+    }
+
+    /// The drag ended, however it ended. Everything it opened closes.
+    fn end(&mut self) {
+        self.dwelling = None;
+        self.opened.clear();
+    }
 }
 
 pub fn show(ui: &mut Ui, input: SidebarInput<'_>) -> Option<Action> {
+    let SidebarInput { config, accounts, selected, font: pane_font, theme, spring } = input;
     let mut action = None;
 
-    if input.config.accounts.is_empty() {
+    // The payload outlives the frame, so this is also how the sidebar knows
+    // a drag is still in progress once the pointer has left the message list.
+    let dragging = egui::DragAndDrop::payload::<super::DraggedMessages>(ui.ctx()).is_some();
+    if !dragging {
+        spring.end();
+    }
+    let now = ui.input(|i| i.time);
+    // Set when the pointer is resting on some closed folder this frame.
+    let mut dwelling_somewhere = false;
+
+    if config.accounts.is_empty() {
         ui.add_space(20.0);
         ui.vertical_centered(|ui| {
             ui.label(RichText::new("No accounts yet").strong());
@@ -52,7 +129,7 @@ pub fn show(ui: &mut Ui, input: SidebarInput<'_>) -> Option<Action> {
         return None;
     }
 
-    let font = input.font.clone();
+    let font = pane_font.clone();
     let size = font.size;
     // Rows are sized from the text, so tightening the font tightens the list.
     let row_height = (size * 1.5).round();
@@ -60,12 +137,18 @@ pub fn show(ui: &mut Ui, input: SidebarInput<'_>) -> Option<Action> {
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
         ui.spacing_mut().item_spacing.y = 1.0;
 
-        for account in input.config.accounts.iter().filter(|a| a.enabled) {
-            let view = input.accounts.entry(account.id).or_default();
+        for account in config.accounts.iter().filter(|a| a.enabled) {
+            let view = accounts.entry(account.id).or_default();
             // Which folders are closed is remembered across restarts, so it
             // is read from the config rather than kept beside the mailboxes.
-            let collapsed: HashSet<&str> =
-                account.collapsed_folders.iter().map(String::as_str).collect();
+            // Folders a drag is holding open are not closed for as long as
+            // it lasts, without the config hearing about it.
+            let collapsed: HashSet<&str> = account
+                .collapsed_folders
+                .iter()
+                .map(String::as_str)
+                .filter(|name| !spring.is_open(account.id, name))
+                .collect();
 
             let header =
                 account_header(ui, account, view, account.sidebar_expanded, &font, row_height);
@@ -125,7 +208,7 @@ pub fn show(ui: &mut Ui, input: SidebarInput<'_>) -> Option<Action> {
                     }
 
                     let selected =
-                        input.selected.is_some_and(|(a, m)| a == account.id && m == mailbox.name);
+                        selected.is_some_and(|(a, m)| a == account.id && m == mailbox.name);
                     let depth = mailbox.display_depth(|path| shown.contains(path));
                     let has_children = view
                         .mailboxes
@@ -143,10 +226,27 @@ pub fn show(ui: &mut Ui, input: SidebarInput<'_>) -> Option<Action> {
                             account: account.id,
                             font: &font,
                             row_height,
-                            palette: &input.theme.palette,
+                            palette: &theme.palette,
                         },
                     );
-                    if let Some(found) = row {
+
+                    // Hovering a closed folder with messages in hand opens
+                    // it, so its children can be reached without breaking
+                    // off the drag.
+                    if row.carrying
+                        && has_children
+                        && account.collapsed_folders.contains(&mailbox.name)
+                    {
+                        dwelling_somewhere = true;
+                        match spring.dwell(account.id, &mailbox.name, now) {
+                            // Repaint even if the pointer never moves again,
+                            // or a still hand would wait forever.
+                            Dwell::Waiting(left) => ui.ctx().request_repaint_after(left),
+                            Dwell::Opened => ui.ctx().request_repaint(),
+                        }
+                    }
+
+                    if let Some(found) = row.outcome {
                         action = Some(found.into_action(account.id, &mailbox.name));
                     }
                 }
@@ -154,13 +254,20 @@ pub fn show(ui: &mut Ui, input: SidebarInput<'_>) -> Option<Action> {
                 if view.mailboxes.is_empty() && view.state == ConnectionState::Online {
                     ui.horizontal(|ui| {
                         ui.add_space(14.0);
-                        ui.label(input.theme.faint_text("no mailboxes"));
+                        ui.label(theme.faint_text("no mailboxes"));
                     });
                 }
             }
             ui.add_space(4.0);
         }
     });
+
+    // Leaving a folder restarts the clock, so crossing several on the way
+    // somewhere does not open the one that happened to be under the pointer
+    // longest.
+    if !dwelling_somewhere {
+        spring.idle();
+    }
 
     action
 }
@@ -278,8 +385,17 @@ fn accepts_drop(
         && payload.rows.iter().any(|row| row.mailbox != mailbox.name)
 }
 
+/// What one mailbox line reported.
+struct RowResult {
+    outcome: Option<RowOutcome>,
+    /// The pointer is over this row holding messages from this account.
+    /// True even when the row will not take them, because a folder can be
+    /// a route to a child that will.
+    carrying: bool,
+}
+
 /// Draws one mailbox line.
-fn mailbox_row(ui: &mut Ui, input: RowInput<'_>) -> Option<RowOutcome> {
+fn mailbox_row(ui: &mut Ui, input: RowInput<'_>) -> RowResult {
     let RowInput {
         mailbox,
         depth,
@@ -295,14 +411,14 @@ fn mailbox_row(ui: &mut Ui, input: RowInput<'_>) -> Option<RowOutcome> {
     let (rect, response) =
         ui.allocate_exact_size(Vec2::new(ui.available_width(), row_height), Sense::click());
     if !ui.is_rect_visible(rect) {
-        return None;
+        return RowResult { outcome: None, carrying: false };
     }
 
     let mut outcome = None;
 
-    let hovering_drop = response
-        .dnd_hover_payload::<super::DraggedMessages>()
-        .is_some_and(|payload| accepts_drop(mailbox, account, &payload));
+    let carried = response.dnd_hover_payload::<super::DraggedMessages>();
+    let carrying = carried.as_ref().is_some_and(|payload| payload.account == account);
+    let hovering_drop = carried.is_some_and(|payload| accepts_drop(mailbox, account, &payload));
     if let Some(payload) = response.dnd_release_payload::<super::DraggedMessages>()
         && accepts_drop(mailbox, account, &payload)
     {
@@ -438,7 +554,7 @@ fn mailbox_row(ui: &mut Ui, input: RowInput<'_>) -> Option<RowOutcome> {
     if shortened || depth > 0 {
         response.on_hover_text(&mailbox.name);
     }
-    outcome
+    RowResult { outcome, carrying }
 }
 
 /// Where the ink sits inside a line of text.
@@ -590,6 +706,68 @@ mod tests {
     #[test]
     fn a_folder_does_not_take_what_it_already_holds() {
         assert!(!accepts_drop(&folder("Work", true), 1, &dragged(1, &["Work"])));
+    }
+
+    fn opened(dwell: &Dwell) -> bool {
+        matches!(dwell, Dwell::Opened)
+    }
+
+    #[test]
+    fn a_folder_opens_once_the_pointer_has_rested_long_enough() {
+        let mut spring = SpringLoad::default();
+        assert!(!opened(&spring.dwell(1, "Work", 0.0)));
+        assert!(!opened(&spring.dwell(1, "Work", SpringLoad::DWELL / 2.0)));
+        assert!(!spring.is_open(1, "Work"));
+
+        assert!(opened(&spring.dwell(1, "Work", SpringLoad::DWELL)));
+        assert!(spring.is_open(1, "Work"));
+    }
+
+    #[test]
+    fn crossing_a_folder_on_the_way_elsewhere_does_not_open_it() {
+        let mut spring = SpringLoad::default();
+        spring.dwell(1, "Work", 0.0);
+        // The pointer moved on before the dwell elapsed.
+        spring.dwell(1, "Archive", 0.1);
+        spring.dwell(1, "Archive", 0.1 + SpringLoad::DWELL);
+
+        assert!(!spring.is_open(1, "Work"));
+        assert!(spring.is_open(1, "Archive"));
+    }
+
+    #[test]
+    fn leaving_every_folder_restarts_the_clock() {
+        let mut spring = SpringLoad::default();
+        spring.dwell(1, "Work", 0.0);
+        spring.idle();
+        // Coming back starts over rather than resuming.
+        spring.dwell(1, "Work", SpringLoad::DWELL);
+        assert!(!spring.is_open(1, "Work"));
+        assert!(opened(&spring.dwell(1, "Work", SpringLoad::DWELL * 2.0)));
+    }
+
+    #[test]
+    fn the_same_name_in_another_account_is_a_different_folder() {
+        let mut spring = SpringLoad::default();
+        spring.dwell(1, "Work", 0.0);
+        spring.dwell(2, "Work", 0.1);
+        spring.dwell(2, "Work", 0.1 + SpringLoad::DWELL);
+
+        assert!(!spring.is_open(1, "Work"));
+        assert!(spring.is_open(2, "Work"));
+    }
+
+    #[test]
+    fn everything_a_drag_opened_closes_when_it_ends() {
+        // The whole point of keeping this out of the config: dragging past a
+        // folder is not a decision to leave it open.
+        let mut spring = SpringLoad::default();
+        spring.dwell(1, "Work", 0.0);
+        spring.dwell(1, "Work", SpringLoad::DWELL);
+        assert!(spring.is_open(1, "Work"));
+
+        spring.end();
+        assert!(!spring.is_open(1, "Work"));
     }
 
     #[test]
