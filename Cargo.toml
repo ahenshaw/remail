@@ -1,6 +1,6 @@
 [package]
 name = "remail"
-version = "0.1.0"
+version = "0.3.0"
 edition = "2024"
 description = "A fast IMAP and Gmail client with an egui interface"
 repository = "https://github.com/ahenshaw/remail"
