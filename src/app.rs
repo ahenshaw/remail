@@ -1183,7 +1183,12 @@ impl eframe::App for RemailApp {
             action = action.take().or(self.toolbar(ui));
         });
 
-        egui::Panel::bottom("status").show(ui, |ui| {
+        // The default panel frame is sized for a toolbar. This one holds a
+        // single line of small text, so it gets its own margin; the fill is
+        // the style's, so only the height changes.
+        let status_frame = egui::Frame::side_top_panel(&ui.style().clone())
+            .inner_margin(egui::Margin::symmetric(8, 4));
+        egui::Panel::bottom("status").frame(status_frame).show(ui, |ui| {
             self.status_bar(ui);
         });
 
@@ -1690,7 +1695,11 @@ impl RemailApp {
     }
 
     fn status_bar(&mut self, ui: &mut egui::Ui) {
-        ui.add_space(2.0);
+        // `interact_size.y` is the theme's button height, and a horizontal
+        // row is at least that tall whether or not anything in it can be
+        // clicked. Nothing here can, so the row is sized by its text.
+        ui.spacing_mut().interact_size.y = 0.0;
+
         ui.horizontal(|ui| {
             // Count what is actually on screen: while a search is showing,
             // the mailbox's own total is not what the list is displaying.
@@ -1719,7 +1728,6 @@ impl RemailApp {
                 }
             });
         });
-        ui.add_space(2.0);
     }
 
     fn dialogs(&mut self, ctx: &Context) {
