@@ -210,6 +210,16 @@ pub struct AccountConfig {
     pub use_idle: bool,
     #[serde(default = "yes")]
     pub enabled: bool,
+
+    /// Sidebar state: whether the account's folder list is showing, and
+    /// which folders have their children hidden.
+    ///
+    /// View state rather than account settings, but it is per-account and
+    /// the alternative is a second file keyed by account id.
+    #[serde(default = "yes")]
+    pub sidebar_expanded: bool,
+    #[serde(default)]
+    pub collapsed_folders: Vec<String>,
 }
 
 fn default_inbox() -> String {
@@ -241,6 +251,8 @@ impl AccountConfig {
             aliases: Vec::new(),
             default_mailbox: default_inbox(),
             use_idle: true,
+            sidebar_expanded: true,
+            collapsed_folders: Vec::new(),
             enabled: true,
         }
     }
@@ -266,6 +278,8 @@ impl AccountConfig {
             aliases: Vec::new(),
             default_mailbox: default_inbox(),
             use_idle: true,
+            sidebar_expanded: true,
+            collapsed_folders: Vec::new(),
             enabled: true,
         }
     }
@@ -455,6 +469,40 @@ mod tests {
         let mut a = AccountConfig::gmail(0, email);
         a.label = label.to_string();
         a
+    }
+
+    #[test]
+    fn sidebar_state_survives_a_round_trip() {
+        let mut before = account("a@example.com", "A");
+        before.sidebar_expanded = false;
+        before.collapsed_folders = vec!["Work".into(), "Work/Reports".into()];
+
+        let after: AccountConfig =
+            toml::from_str(&toml::to_string_pretty(&before).expect("serializes"))
+                .expect("deserializes");
+
+        assert!(!after.sidebar_expanded);
+        assert_eq!(after.collapsed_folders, ["Work", "Work/Reports"]);
+    }
+
+    #[test]
+    fn a_config_written_before_the_sidebar_was_remembered_still_loads() {
+        // Every account starts fully expanded, so the field missing has to
+        // mean open rather than the `bool` default of closed.
+        let older = r#"
+            id = 1
+            label = "A"
+            email = "a@example.com"
+            imap_host = "imap.example.com"
+            imap_port = 993
+            smtp_host = "smtp.example.com"
+            smtp_port = 465
+            username = "a@example.com"
+            auth = "password"
+        "#;
+        let account: AccountConfig = toml::from_str(older).expect("deserializes");
+        assert!(account.sidebar_expanded);
+        assert!(account.collapsed_folders.is_empty());
     }
 
     #[test]

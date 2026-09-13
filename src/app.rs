@@ -250,6 +250,25 @@ impl RemailApp {
             }
 
             Event::Mailboxes { account, mailboxes } => {
+                // Folders that were renamed or deleted elsewhere would
+                // otherwise accumulate in the config forever.
+                let live: std::collections::HashSet<&str> =
+                    mailboxes.iter().map(|m| m.name.as_str()).collect();
+                let pruned = {
+                    let mut config = self.config.write().unwrap();
+                    match config.account_mut(account) {
+                        Some(config) => {
+                            let before = config.collapsed_folders.len();
+                            config.collapsed_folders.retain(|name| live.contains(name.as_str()));
+                            config.collapsed_folders.len() != before
+                        }
+                        None => false,
+                    }
+                };
+                if pruned {
+                    self.save_config();
+                }
+
                 self.accounts.entry(account).or_default().mailboxes = mailboxes;
             }
 
@@ -551,10 +570,25 @@ impl RemailApp {
                 self.folder_edit = Some(FolderEdit::Delete { account, mailbox });
             }
             Action::ToggleFolder { account, mailbox } => {
-                let view = self.accounts.entry(account).or_default();
-                if !view.collapsed.remove(&mailbox) {
-                    view.collapsed.insert(mailbox);
+                {
+                    let mut config = self.config.write().unwrap();
+                    let Some(account) = config.account_mut(account) else { return };
+                    let closed = &mut account.collapsed_folders;
+                    match closed.iter().position(|name| *name == mailbox) {
+                        Some(at) => drop(closed.remove(at)),
+                        None => closed.push(mailbox),
+                    }
                 }
+                // A click, not a drag, so there is nothing to debounce.
+                self.save_config();
+            }
+            Action::ToggleAccount(account) => {
+                {
+                    let mut config = self.config.write().unwrap();
+                    let Some(account) = config.account_mut(account) else { return };
+                    account.sidebar_expanded = !account.sidebar_expanded;
+                }
+                self.save_config();
             }
         }
     }

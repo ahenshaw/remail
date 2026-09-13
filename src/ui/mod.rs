@@ -89,6 +89,8 @@ pub enum Action {
         account: AccountId,
         mailbox: String,
     },
+    /// Show or hide an account's whole folder list.
+    ToggleAccount(AccountId),
 }
 
 use chrono::{DateTime, Datelike, Local, TimeZone, Utc};

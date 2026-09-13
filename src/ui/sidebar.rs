@@ -17,22 +17,13 @@ use crate::mail::{ConnectionState, MailboxInfo, SpecialUse};
 pub struct AccountView {
     pub mailboxes: Vec<MailboxInfo>,
     pub state: ConnectionState,
-    pub expanded: bool,
     /// Set when the engine reports the account has no usable authorization.
     pub needs_sign_in: bool,
-    /// Folders whose children are hidden.
-    pub collapsed: HashSet<String>,
 }
 
 impl Default for AccountView {
     fn default() -> Self {
-        Self {
-            mailboxes: Vec::new(),
-            state: ConnectionState::Offline,
-            expanded: true,
-            needs_sign_in: false,
-            collapsed: HashSet::new(),
-        }
+        Self { mailboxes: Vec::new(), state: ConnectionState::Offline, needs_sign_in: false }
     }
 }
 
@@ -71,9 +62,17 @@ pub fn show(ui: &mut Ui, input: SidebarInput<'_>) -> Option<Action> {
 
         for account in input.config.accounts.iter().filter(|a| a.enabled) {
             let view = input.accounts.entry(account.id).or_default();
+            // Which folders are closed is remembered across restarts, so it
+            // is read from the config rather than kept beside the mailboxes.
+            let collapsed: HashSet<&str> =
+                account.collapsed_folders.iter().map(String::as_str).collect();
 
-            match account_header(ui, account.short_name(), view, &font, row_height) {
-                Some(AccountOutcome::Toggle) => view.expanded = !view.expanded,
+            let header =
+                account_header(ui, account, view, account.sidebar_expanded, &font, row_height);
+            match header {
+                Some(AccountOutcome::Toggle) => {
+                    action = Some(Action::ToggleAccount(account.id));
+                }
                 Some(AccountOutcome::NewFolder) => {
                     action = Some(Action::NewSubfolder {
                         account: account.id,
@@ -107,7 +106,7 @@ pub fn show(ui: &mut Ui, input: SidebarInput<'_>) -> Option<Action> {
                 });
             }
 
-            if view.expanded {
+            if account.sidebar_expanded {
                 // Indent against the mailboxes actually on screen, so the
                 // children of a hidden container are not left dangling.
                 let shown: HashSet<&str> = view
@@ -120,7 +119,7 @@ pub fn show(ui: &mut Ui, input: SidebarInput<'_>) -> Option<Action> {
                 for mailbox in view.mailboxes.iter().filter(|m| m.selectable) {
                     // Hidden if anything above it is collapsed.
                     let under_collapsed =
-                        mailbox.ancestors().iter().any(|path| view.collapsed.contains(*path));
+                        mailbox.ancestors().iter().any(|path| collapsed.contains(path));
                     if under_collapsed {
                         continue;
                     }
@@ -140,7 +139,7 @@ pub fn show(ui: &mut Ui, input: SidebarInput<'_>) -> Option<Action> {
                             depth,
                             selected,
                             has_children,
-                            collapsed: view.collapsed.contains(&mailbox.name),
+                            collapsed: collapsed.contains(mailbox.name.as_str()),
                             font: &font,
                             row_height,
                             palette: &input.theme.palette,
@@ -174,11 +173,13 @@ enum AccountOutcome {
 /// Draws the account line.
 fn account_header(
     ui: &mut Ui,
-    name: &str,
+    account: &crate::config::AccountConfig,
     view: &AccountView,
+    expanded: bool,
     font: &FontId,
     row_height: f32,
 ) -> Option<AccountOutcome> {
+    let name = account.short_name();
     let (rect, response) =
         ui.allocate_exact_size(Vec2::new(ui.available_width(), row_height), Sense::click());
     if !ui.is_rect_visible(rect) {
@@ -201,7 +202,7 @@ fn account_header(
         painter,
         pos2(rect.left() + 9.0, mark_centre),
         font.size * 0.30,
-        view.expanded,
+        expanded,
         visuals.weak_text_color(),
     );
     painter.circle_filled(pos2(rect.left() + 18.0, mark_centre), 3.0, connection_color(view.state));
