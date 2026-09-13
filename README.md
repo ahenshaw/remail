@@ -25,6 +25,9 @@ renderer for message bodies.
   and PDF export already live.
 - **Recipient completion** from every address the account has seen, ranked so
   the people you write to come before the lists that write to you.
+- **A search language**: `subject:invoice from:jane -is:read since:2w`. The
+  same query filters what is loaded as you type and compiles to an IMAP
+  `SEARCH` when you press Enter.
 - **Send as** any address configured for the account. A reply goes out from
   whichever of them the message was addressed to.
 
@@ -93,6 +96,51 @@ OAuth entirely.
 Passwords and refresh tokens go to the OS keyring, never to the config file.
 On Linux that needs a Secret Service (GNOME Keyring, KWallet); the accounts
 dialog says so plainly if none is running.
+
+## Search
+
+Typing filters the messages already loaded. Enter escalates to a server-side
+search, over the folder, its subfolders, or the whole account, depending on
+the scope selector beside the box.
+
+Both understand the same small query language. Plain words search subject,
+sender and recipient together, and terms are ANDed:
+
+```
+subject:invoice from:jane
+```
+
+| | |
+|---|---|
+| `subject:` `from:` `to:` `cc:` `bcc:` | header fields |
+| `body:` `text:` | the message body; `text:` is headers and body together |
+| `is:unread` `is:read` `is:starred` `is:answered` `is:draft` | state |
+| `has:attachment` | |
+| `since:` `before:` `on:` | `2026-01-31`, or an offset: `7d` `2w` `3m` `1y` |
+| `larger:` `smaller:` | `200k`, `2m`, or a byte count |
+| `"two words"` | a phrase |
+| `-term` | exclude |
+| `OR`, `( )` | alternatives and grouping; AND binds tighter than OR |
+
+So `subject:report -from:noreply since:2w` is three terms, and
+`(from:jane OR from:paul) has:attachment` is two.
+
+Two places where the filter and the search differ, both because the cache
+holds envelopes rather than whole messages:
+
+- `body:` and `text:` match only the cached preview while you type, and the
+  whole message once you press Enter. The list says so when that is why it
+  came up empty.
+- `has:attachment` is exact locally, because the structure was parsed when
+  the envelope was cached. On the server it compiles to a `Content-Type`
+  header test, which is the closest IMAP can answer: it misses attachments
+  sent as `multipart/related`, and matches some messages that only have an
+  inline image.
+
+A malformed query is reported in the status line rather than searched for, so
+`colour:red` says that `colour:` is not a field instead of quietly finding
+nothing.
+
 
 ## Keyboard
 

@@ -18,6 +18,7 @@ use tokio::sync::{Notify, mpsc};
 
 use super::imap::{IdleOutcome, ImapConnection};
 use super::model::{Draft, Envelope, Flags, MailboxInfo, MessageBody, SearchScope, SpecialUse};
+use super::query::Query;
 use super::store::{MailboxState, Store};
 use super::{imap, parse, smtp};
 use crate::auth::{Credential, TokenStore, oauth};
@@ -1041,7 +1042,7 @@ impl AccountWorker {
         include_spam_and_trash: bool,
     ) -> Result<()> {
         let account = self.account;
-        let criteria = imap::text_search(query)?;
+        let criteria = Query::parse(query)?.to_imap()?;
         let targets = self.search_targets(mailbox, scope, include_spam_and_trash)?;
 
         let mut results: Vec<Envelope> = Vec::new();

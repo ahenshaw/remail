@@ -29,6 +29,25 @@ use crate::ui::{Action, message_list, reader, sidebar};
 /// How many messages either side of the viewport to warm the cache with.
 const PREFETCH_MARGIN: usize = 6;
 
+/// Hover text for the search box. The language is only useful if it is
+/// discoverable from the box it applies to; see `mail::query`.
+const SEARCH_SYNTAX: &str = "\
+Plain words search subject, sender and recipient.
+
+  subject:invoice from:jane     both must match
+  subject:\"quarterly report\"    quote a phrase
+  from:jane OR from:paul        either
+  -from:noreply                 exclude
+  (a OR b) subject:c            group
+
+  to: cc: bcc: body: text:      other fields
+  is:unread is:starred is:read  state
+  has:attachment                approximate on the server, exact locally
+  since:7d before:2026-01-01    dates, or 2w / 3m / 1y
+  larger:2m smaller:200k        size
+
+Enter searches the server; typing filters what is already loaded.";
+
 /// The message currently open in the reader.
 struct OpenMessage {
     key: MessageKey,
@@ -941,11 +960,22 @@ impl RemailApp {
         if let Some(results) = &self.search_results {
             return results.clone();
         }
-        let needle = self.search.trim().to_ascii_lowercase();
-        if needle.is_empty() {
+        let typed = self.search.trim();
+        if typed.is_empty() {
             return self.envelopes.clone();
         }
-        self.envelopes.iter().filter(|e| e.matches(&needle)).cloned().collect()
+
+        // A query half-typed is a query that does not parse — `subject:` on
+        // the way to `subject:invoice`. Falling back to a plain substring
+        // match keeps the list from emptying under the cursor; the error is
+        // only worth reporting once Enter asks the server.
+        match crate::mail::Query::parse(typed) {
+            Ok(query) => self.envelopes.iter().filter(|e| query.matches(e)).cloned().collect(),
+            Err(_) => {
+                let needle = typed.to_ascii_lowercase();
+                self.envelopes.iter().filter(|e| e.matches(&needle)).cloned().collect()
+            }
+        }
     }
 
     /// Queues a notification. Events are handled before the frame has a
@@ -1384,22 +1414,29 @@ impl RemailApp {
         // which is what overflowed into the scope selector before.
         let width = (ui.available_width() - clear_width - 8.0).clamp(90.0, 320.0);
 
-        let search = ui.add(
-            TextInput::new(&mut self.search)
-                .hint(match self.search_scope {
-                    SearchScope::Folder => "Search this folder",
-                    SearchScope::Subtree => "Search with subfolders",
-                    SearchScope::All => "Search all folders",
-                })
-                .compact(true)
-                .desired_width(width),
-        );
+        let search = ui
+            .add(
+                TextInput::new(&mut self.search)
+                    .hint(match self.search_scope {
+                        SearchScope::Folder => "Search this folder",
+                        SearchScope::Subtree => "Search with subfolders",
+                        SearchScope::All => "Search all folders",
+                    })
+                    .compact(true)
+                    .desired_width(width),
+            )
+            .on_hover_text(SEARCH_SYNTAX);
         // Enter escalates from the local filter to a server search, which
         // reaches messages that are not cached locally.
         if search.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
             let query = self.search.trim().to_string();
             if !query.is_empty() {
-                action = Some(Action::SearchServer(query));
+                // Checked here so a typo is answered immediately instead of
+                // after a round trip to every mailbox in scope.
+                match crate::mail::Query::parse(&query) {
+                    Ok(_) => action = Some(Action::SearchServer(query)),
+                    Err(e) => self.status = format!("Search: {e}"),
+                }
             }
         }
 
@@ -1429,7 +1466,15 @@ impl RemailApp {
         } else if self.search_results.is_some() {
             "No messages matched"
         } else if !self.search.trim().is_empty() {
-            "No cached messages matched"
+            // `body:` and `text:` reach the whole message on the server and
+            // only the cached preview here, so an empty list is more likely
+            // to mean "not cached" than "not there".
+            match crate::mail::Query::parse(self.search.trim()) {
+                Ok(query) if query.needs_the_server() => {
+                    "Nothing in the cache matched \u{2014} press Enter to search the server"
+                }
+                _ => "No cached messages matched",
+            }
         } else {
             "No messages"
         };

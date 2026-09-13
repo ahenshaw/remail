@@ -675,15 +675,6 @@ pub fn quote(value: &str) -> String {
     format!("\"{}\"", value.replace('\\', r"\\").replace('"', "\\\""))
 }
 
-/// Builds a `SEARCH` command for a free-text query across the usual fields.
-pub fn text_search(query: &str) -> Result<String> {
-    let query = query.trim();
-    if query.is_empty() {
-        bail!("empty search");
-    }
-    Ok(format!("OR OR SUBJECT {q} FROM {q} TO {q}", q = quote(query)))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -710,8 +701,6 @@ mod tests {
     #[test]
     fn quotes_search_terms() {
         assert_eq!(quote(r#"say "hi""#), r#""say \"hi\"""#);
-        assert!(text_search("report").unwrap().contains("SUBJECT \"report\""));
-        assert!(text_search("  ").is_err());
     }
 
     /// Renders the sidebar tree for the mailboxes in the local cache, using
@@ -819,6 +808,67 @@ mod tests {
         connection.logout().await;
     }
 
+    /// Checks that a real server accepts everything the query compiler can
+    /// emit. The grammar is agreed on paper; whether Gmail takes a
+    /// parenthesised `OR` or a `HEADER Content-Type` key is not something the
+    /// unit tests can answer.
+    ///
+    /// Read-only: every query is a SEARCH against INBOX.
+    #[tokio::test]
+    #[ignore = "requires a signed-in account"]
+    async fn a_real_server_accepts_every_compiled_form() {
+        let config = crate::config::Config::load().expect("config");
+        let Some(account) = config.accounts.iter().find(|a| a.enabled) else { return };
+        let tokens = crate::auth::TokenStore::new();
+        let Ok(credential) = tokens.credential(account).await else {
+            println!("account is not signed in");
+            return;
+        };
+        let mut connection = ImapConnection::connect(account, &credential).await.expect("connect");
+        connection.select("INBOX").await.expect("select INBOX");
+
+        let queries = [
+            "report",
+            "subject:invoice",
+            "from:jane subject:report",
+            "from:jane OR from:paul",
+            "from:a OR from:b OR from:c",
+            "subject:x from:y OR to:z",
+            "subject:x (from:y OR to:z)",
+            "-from:noreply",
+            "cc:team bcc:hidden",
+            "body:contract",
+            "text:anything",
+            "is:unread",
+            "is:starred -is:read",
+            "has:attachment",
+            "since:30d",
+            "before:2026-01-01",
+            "on:2026-09-12",
+            "larger:2m smaller:20m",
+            r#"subject:"quarterly report""#,
+            "subject:naïve",
+        ];
+
+        let mut rejected = Vec::new();
+        for query in queries {
+            let criteria = crate::mail::query::Query::parse(query)
+                .expect("parses")
+                .to_imap()
+                .expect("compiles");
+            match connection.search(&criteria).await {
+                Ok(hits) => println!("  ok    {query:<28} {:>4} hits   {criteria}", hits.len()),
+                Err(e) => {
+                    println!("  FAIL  {query:<28} {criteria}\n          {e}");
+                    rejected.push(query);
+                }
+            }
+        }
+        connection.logout().await;
+
+        assert!(rejected.is_empty(), "the server rejected: {rejected:?}");
+    }
+
     /// Runs a whole-account search the way the engine does and reports where
     /// the hits are, so a folder being missed shows up as a count rather than
     /// as a user noticing later.
@@ -837,7 +887,8 @@ mod tests {
         let mut connection = ImapConnection::connect(account, &credential).await.expect("connect");
 
         let mailboxes = connection.list_mailboxes().await.expect("list");
-        let criteria = text_search(&term).expect("criteria");
+        let criteria =
+            crate::mail::query::Query::parse(&term).expect("parses").to_imap().expect("criteria");
 
         // Every selectable mailbox, so the engine's choice can be compared
         // against the ground truth.

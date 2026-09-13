@@ -4,6 +4,7 @@ pub mod engine;
 pub mod imap;
 pub mod model;
 pub mod parse;
+pub mod query;
 pub mod smtp;
 pub mod store;
 
@@ -12,4 +13,5 @@ pub use model::{
     Addr, Draft, Envelope, Flags, MailboxInfo, MessageBody, MessageKey, RowKey, SearchScope,
     SpecialUse,
 };
+pub use query::Query;
 pub use store::Store;
