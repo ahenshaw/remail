@@ -131,8 +131,7 @@ pub fn show(ui: &mut Ui, input: SidebarInput<'_>) -> Option<Action> {
 
     let font = pane_font.clone();
     let size = font.size;
-    // Rows are sized from the text, so tightening the font tightens the list.
-    let row_height = (size * 1.5).round();
+    let row_height = row_height(size);
 
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
         ui.spacing_mut().item_spacing.y = 1.0;
@@ -276,6 +275,16 @@ pub fn show(ui: &mut Ui, input: SidebarInput<'_>) -> Option<Action> {
 enum AccountOutcome {
     Toggle,
     NewFolder,
+}
+
+/// Height of one folder row.
+///
+/// Sized from the text, so tightening the font tightens the list. The ratio
+/// leaves room above and below the capitals rather than fitting them: a
+/// folder list is read by running down it, and rows packed to the height of
+/// their own letters give the eye nothing to travel between.
+fn row_height(size: f32) -> f32 {
+    (size * 1.8).round()
 }
 
 /// Draws the account line.
@@ -677,7 +686,7 @@ mod tests {
         for (name, metrics, size) in
             [("bundled", bundled_14(), 14.0_f32), ("Candara", candara_15_6(), 15.641932)]
         {
-            let row_height = (size * 1.5).round();
+            let row_height = row_height(size);
             let centre = row_height * 0.5;
             let top = metrics.top_for_centred_caps(centre);
 
@@ -692,7 +701,7 @@ mod tests {
         for (name, metrics, size) in
             [("bundled", bundled_14(), 14.0_f32), ("Candara", candara_15_6(), 15.641932)]
         {
-            let row_height = (size * 1.5).round();
+            let row_height = row_height(size);
             let centre = row_height * 0.5;
             let top = metrics.top_for_centred_caps(centre);
             let icon = size * 0.96;
@@ -821,7 +830,7 @@ mod render_tests {
         let theme = crate::config::ThemeChoice::Outlook.theme();
         let painted = theme.clone();
         let font = FontId::new(size, egui::FontFamily::Proportional);
-        let row_height = (size * 1.5).round();
+        let row_height = row_height(size);
         println!("size {size}, row_height {row_height}");
 
         let names: [(&str, SpecialUse); 6] = [

@@ -443,16 +443,19 @@ fn draw_row(
 
         if !envelope.preview.is_empty() {
             // The muted text colour rather than `weak`, which is body text
-            // thinned by alpha until it half-dissolves into the row. The
-            // synopsis is there to be read at a glance; it should be quieter
-            // than the subject, not faint.
+            // thinned by alpha until it half-dissolves into the row — then
+            // taken half of the rest of the way to body text. The synopsis is
+            // set small and it is the line that says whether a message is
+            // worth opening, so it has to survive being read at a glance; it
+            // wants to be quieter than the subject, not faint. What is left
+            // of the gap to body text is what keeps it quieter.
             let _ = paint_truncated(
                 painter,
                 pos2(preview_left, rect.top() + metrics.preview_y),
                 right - preview_left,
                 &envelope.preview,
                 font(size * 0.82),
-                palette.text_muted,
+                super::deepen(palette.text_muted, palette, 0.5),
             );
         }
     }
