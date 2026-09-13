@@ -97,6 +97,7 @@ pub struct RemailApp {
     accounts_dialog: Option<AccountsDialog>,
     /// A folder create, rename or delete awaiting confirmation.
     folder_edit: Option<FolderEdit>,
+    move_to: Option<crate::ui::move_to::MoveDialog>,
     settings_open: bool,
 
     status: String,
@@ -153,6 +154,7 @@ impl RemailApp {
             compose: None,
             accounts_dialog: None,
             folder_edit: None,
+            move_to: None,
             settings_open: false,
             status: String::new(),
             pending_toasts: Vec::new(),
@@ -582,6 +584,15 @@ impl RemailApp {
                 // A click, not a drag, so there is nothing to debounce.
                 self.save_config();
             }
+            Action::MoveTo => {
+                let Some((account, _)) = self.open_mailbox.clone() else { return };
+                let rows = self.targets();
+                if rows.is_empty() {
+                    self.status = "Nothing selected to move".into();
+                    return;
+                }
+                self.move_to = Some(crate::ui::move_to::MoveDialog::new(account, rows));
+            }
             Action::ToggleAccount(account) => {
                 {
                     let mut config = self.config.write().unwrap();
@@ -755,6 +766,36 @@ impl RemailApp {
             });
         }
         let _ = mailbox;
+    }
+
+    /// Moves rows to a folder the user picked.
+    fn move_rows(&mut self, account: AccountId, rows: Vec<RowKey>, destination: String) {
+        let movable: Vec<RowKey> =
+            rows.into_iter().filter(|row| row.mailbox != destination).collect();
+        if movable.is_empty() {
+            return;
+        }
+
+        let moved = movable.len();
+        self.remove_rows(&movable);
+        for (mailbox, uids) in Self::by_mailbox(&movable) {
+            self.engine.send(Command::Move {
+                account,
+                mailbox,
+                uids,
+                destination: destination.clone(),
+            });
+        }
+
+        // Present tense: the rows have gone from the list, but the server
+        // has not answered yet. The engine reports the outcome, and puts the
+        // rows back if the move failed.
+        let shown = crate::mail::model::display_folder(&destination);
+        self.status = if moved == 1 {
+            format!("Moving to {shown}\u{2026}")
+        } else {
+            format!("Moving {moved} messages to {shown}\u{2026}")
+        };
     }
 
     fn delete(&mut self) {
@@ -1347,6 +1388,18 @@ impl RemailApp {
             }
             if ui
                 .add(
+                    Button::new(format!("{} Move", glyphs::FOLDER))
+                        .size(ButtonSize::Small)
+                        .outline()
+                        .enabled(has_target),
+                )
+                .on_hover_text("Move to a folder (M)")
+                .clicked()
+            {
+                action = Some(Action::MoveTo);
+            }
+            if ui
+                .add(
                     Button::new(format!("{} Delete", glyphs::TRASH))
                         .size(ButtonSize::Small)
                         .outline()
@@ -1538,7 +1591,12 @@ impl RemailApp {
         );
 
         self.prefetch(&visible, output.visible);
-        output.action
+        // The focus change comes first, so a menu choice on an unselected row
+        // acts on that row.
+        if let Some(action) = output.action {
+            self.apply(action);
+        }
+        output.pending
     }
 
     /// Asks the engine to cache bodies around the viewport, so scrolling then
@@ -1645,6 +1703,8 @@ impl RemailApp {
                 action = Some(Nav::Act(Action::Compose));
             } else if input.key_pressed(Key::E) {
                 action = Some(Nav::Act(Action::Archive));
+            } else if input.key_pressed(Key::M) {
+                action = Some(Nav::Act(Action::MoveTo));
             } else if input.key_pressed(Key::U) {
                 action = Some(Nav::Act(Action::ToggleRead));
             } else if input.key_pressed(Key::S) {
@@ -1845,6 +1905,25 @@ impl RemailApp {
                 self.folder_edit = None;
             } else if !open {
                 self.folder_edit = None;
+            }
+        }
+
+        // Move to folder.
+        if let Some(dialog) = &mut self.move_to {
+            let mailboxes = self
+                .accounts
+                .get(&dialog.account)
+                .map(|view| view.mailboxes.clone())
+                .unwrap_or_default();
+            let (chosen, closed) = crate::ui::move_to::show(ctx, dialog, &mailboxes, &self.theme);
+
+            if let Some(destination) = chosen {
+                let account = dialog.account;
+                let rows = std::mem::take(&mut dialog.rows);
+                self.move_rows(account, rows, destination);
+                self.move_to = None;
+            } else if closed {
+                self.move_to = None;
             }
         }
 

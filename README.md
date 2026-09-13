@@ -28,6 +28,9 @@ renderer for message bodies.
 - **A search language**: `subject:invoice from:jane -is:read since:2w`. The
   same query filters what is loaded as you type and compiles to an IMAP
   `SEARCH` when you press Enter.
+- **Move to a folder** by typing part of its name, from the toolbar, `m`, or
+  a right-click on the message. Rows leave the list at once and come back if
+  the server refuses.
 - **Send as** any address configured for the account. A reply goes out from
   whichever of them the message was addressed to.
 
@@ -147,11 +150,12 @@ nothing.
 | Key | Action | | Key | Action |
 |---|---|---|---|---|
 | `j` / `↓` | next message | | `e` | archive |
-| `k` / `↑` | previous message | | `Del` | delete |
-| `r` | reply | | `u` | toggle read |
-| `R` | reply all | | `s` | toggle star |
-| `f` | forward | | `F5` | sync mailbox |
-| `c` | compose | | `Esc` | clear search |
+| `k` / `↑` | previous message | | `m` | move to a folder |
+| `r` | reply | | `Del` | delete |
+| `R` | reply all | | `u` | toggle read |
+| `f` | forward | | `s` | toggle star |
+| `c` | compose | | `F5` | sync mailbox |
+| | | | `Esc` | clear search |
 
 `Ctrl+Enter` sends from the compose window. Typing in the search box filters
 the cached listing; pressing `Enter` escalates to a server-side `SEARCH`, which

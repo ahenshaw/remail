@@ -76,11 +76,17 @@ impl RowMetrics {
 /// What the list drew, so the app can prefetch what the user is looking at.
 pub struct ListOutput {
     pub action: Option<Action>,
+    /// A context-menu choice, applied after `action` so that a right-click on
+    /// an unselected row moves the cursor there first.
+    pub pending: Option<Action>,
     pub visible: Range<usize>,
 }
 
 pub fn show(ui: &mut Ui, input: ListInput<'_>) -> ListOutput {
     let mut action = None;
+    // A menu choice has to land after the focus change it may depend on, so
+    // it is held back rather than overwriting `action`.
+    let mut pending = None;
 
     if input.envelopes.is_empty() {
         ui.add_space(32.0);
@@ -89,7 +95,7 @@ pub fn show(ui: &mut Ui, input: ListInput<'_>) -> ListOutput {
                 egui::RichText::new(input.empty_message).color(ui.visuals().weak_text_color()),
             );
         });
-        return ListOutput { action: None, visible: 0..0 };
+        return ListOutput { action: None, pending: None, visible: 0..0 };
     }
 
     let metrics = RowMetrics::new(input.font.size, input.compact);
@@ -129,6 +135,30 @@ pub fn show(ui: &mut Ui, input: ListInput<'_>) -> ListOutput {
                 pos2(rect.right() - 30.0, rect.top() + metrics.sender_y - 2.0),
                 Vec2::splat(22.0),
             );
+            // Right-click acts on the selection when the row is part of it,
+            // and on the row alone otherwise — so the menu never silently
+            // operates on something other than what was clicked.
+            let menu = elegance::ContextMenu::new(("message-menu", &key)).show(&response, |ui| {
+                let mut chosen = None;
+                if ui.add(elegance::MenuItem::new("Move to\u{2026}")).clicked() {
+                    chosen = Some(Action::MoveTo);
+                }
+                if ui.add(elegance::MenuItem::new("Archive")).clicked() {
+                    chosen = Some(Action::Archive);
+                }
+                ui.separator();
+                if ui.add(elegance::MenuItem::new("Delete")).clicked() {
+                    chosen = Some(Action::Delete);
+                }
+                chosen
+            });
+            if let Some(Some(chosen)) = menu {
+                if !input.selection.contains(&key) {
+                    action = Some(Action::Focus(key.clone()));
+                }
+                pending = Some(chosen);
+            }
+
             let star = ui.interact(star_rect, ui.id().with(("star", envelope.uid)), Sense::click());
             if star.clicked() {
                 action = Some(Action::ToggleStar(key.clone()));
@@ -149,7 +179,7 @@ pub fn show(ui: &mut Ui, input: ListInput<'_>) -> ListOutput {
         }
     });
 
-    ListOutput { action, visible }
+    ListOutput { action, pending, visible }
 }
 
 /// Where a row sits in the list and how the pointer and selection see it.

@@ -11,6 +11,7 @@ pub mod fonts;
 pub mod icons;
 pub mod images;
 pub mod message_list;
+pub mod move_to;
 pub mod reader;
 pub mod sidebar;
 
@@ -91,6 +92,8 @@ pub enum Action {
     },
     /// Show or hide an account's whole folder list.
     ToggleAccount(AccountId),
+    /// Ask where to move the selected messages.
+    MoveTo,
 }
 
 use chrono::{DateTime, Datelike, Local, TimeZone, Utc};
