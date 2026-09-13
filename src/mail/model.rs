@@ -72,7 +72,11 @@ impl Addr {
     /// neither of which exists.
     pub fn full(&self) -> String {
         let name = self.name.trim();
-        if name.is_empty() {
+        // Plenty of senders put their address in the name slot, which would
+        // otherwise be written out twice over — and, since an address holds
+        // an `@`, in quotes: `"a@b.com" <a@b.com>`. It says nothing the
+        // address does not.
+        if name.is_empty() || name.eq_ignore_ascii_case(self.email.trim()) {
             return self.email.clone();
         }
         if name.contains(|c| "(),:;<>@[]\\\"".contains(c)) {
@@ -381,6 +385,26 @@ mod tests {
             delimiter: Some("/".to_string()),
             ..Default::default()
         }
+    }
+
+    /// A sender whose display name is their own address gains nothing from
+    /// being written out twice, and doing so drags the whole thing through
+    /// the quoting rules for the `@`.
+    #[test]
+    fn a_display_name_that_is_the_address_is_dropped() {
+        let doubled =
+            Addr { name: "micheletoei@gmail.com".into(), email: "micheletoei@gmail.com".into() };
+        assert_eq!(doubled.full(), "micheletoei@gmail.com");
+
+        // Case and stray whitespace do not make it a different name.
+        let shouted =
+            Addr { name: " MICHELETOEI@GMAIL.COM ".into(), email: "micheletoei@gmail.com".into() };
+        assert_eq!(shouted.full(), "micheletoei@gmail.com");
+
+        // A name that merely holds an address is still a name.
+        let named =
+            Addr { name: "Michele (micheletoei@gmail.com)".into(), email: "m@x.com".into() };
+        assert_eq!(named.full(), "\"Michele (micheletoei@gmail.com)\" <m@x.com>");
     }
 
     #[test]

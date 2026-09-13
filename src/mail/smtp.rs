@@ -11,7 +11,7 @@ use lettre::message::{Attachment, Mailbox, MultiPart, SinglePart};
 use lettre::transport::smtp::authentication::{Credentials, Mechanism};
 use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
 
-use super::model::Draft;
+use super::model::{Addr, Draft};
 use super::parse::parse_address_list;
 use crate::auth::Credential;
 use crate::config::{AccountConfig, Encryption};
@@ -117,11 +117,12 @@ pub fn build(account: &AccountConfig, draft: &Draft) -> Result<Message> {
 }
 
 fn mailbox(name: &str, email: &str) -> Result<Mailbox> {
-    let text = if name.trim().is_empty() {
-        email.trim().to_string()
-    } else {
-        format!("{} <{}>", name.trim(), email.trim())
-    };
+    // Through `Addr`, so a display name that needs quoting gets it. The name
+    // arrives here already stripped of its quotes — the compose field holds
+    // `"Doe, Jane" <jane@example.com>`, and reading that back gives the bare
+    // `Doe, Jane` — so writing it out unquoted would hand lettre two
+    // addresses where the user typed one, or none it could parse at all.
+    let text = Addr { name: name.trim().to_string(), email: email.trim().to_string() }.full();
     text.parse::<Mailbox>().with_context(|| format!("invalid address {text}"))
 }
 
@@ -281,6 +282,48 @@ mod tests {
         assert!(raw.contains("To: you@example.org"));
         assert!(raw.contains("Subject: Hi"));
         assert!(raw.contains("Hello"));
+    }
+
+    /// The compose field holds what `Addr::full` wrote, and reading it back
+    /// strips the quotes off the name. Writing it out again unquoted is what
+    /// made lettre reject a perfectly ordinary reply.
+    #[test]
+    fn a_recipient_survives_the_round_trip_through_the_compose_field() {
+        for (name, email) in [
+            ("Doe, Jane", "jane@example.com"),
+            ("micheletoei@gmail.com", "micheletoei@gmail.com"),
+            ("Smith; Bob", "bob@example.com"),
+            ("A \"B\" C", "c@example.com"),
+        ] {
+            let typed = Addr { name: name.into(), email: email.into() }.full();
+            let draft = Draft {
+                to: typed.clone(),
+                subject: "Hi".into(),
+                body: "Hello".into(),
+                ..Default::default()
+            };
+            let message = build(&account(), &draft)
+                .unwrap_or_else(|e| panic!("{typed} was rejected on the way back: {e}"));
+
+            let raw = String::from_utf8(message.formatted()).unwrap();
+            assert!(raw.contains(email), "recipient lost from:\n{raw}");
+        }
+    }
+
+    /// One field, two recipients, one of them carrying the comma that would
+    /// otherwise split it.
+    #[test]
+    fn a_quoted_name_does_not_split_the_recipient_list() {
+        let to = format!(
+            "{}, {}",
+            Addr { name: "Doe, Jane".into(), email: "jane@example.com".into() }.full(),
+            Addr { name: "Bob".into(), email: "bob@example.org".into() }.full(),
+        );
+        let draft = Draft { to, subject: "Hi".into(), body: "Hello".into(), ..Default::default() };
+
+        let raw = String::from_utf8(build(&account(), &draft).unwrap().formatted()).unwrap();
+        assert!(raw.contains("jane@example.com"), "first recipient lost:\n{raw}");
+        assert!(raw.contains("bob@example.org"), "second recipient lost:\n{raw}");
     }
 
     #[test]
