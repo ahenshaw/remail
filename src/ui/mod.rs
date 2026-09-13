@@ -486,7 +486,8 @@ pub mod raster {
         for primitive in ctx.tessellate(output.shapes, 1.0) {
             let egui::epaint::Primitive::Mesh(mesh) = primitive.primitive else { continue };
             let textured = mesh.texture_id == egui::TextureId::Managed(0);
-            for triangle in mesh.indices.chunks_exact(3) {
+            let (triangles, _) = mesh.indices.as_chunks::<3>();
+            for triangle in triangles {
                 let v = [
                     &mesh.vertices[triangle[0] as usize],
                     &mesh.vertices[triangle[1] as usize],
