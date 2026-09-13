@@ -262,6 +262,18 @@ pub fn accent_tint(palette: &elegance::Palette, subtlety: f32) -> Color32 {
     mix(palette.blue, palette.card, subtlety)
 }
 
+/// Pushes a colour further from the page and harder to miss.
+///
+/// `amount` runs from 0 (unchanged) to 1 (plain body text). The target is the
+/// theme's text colour rather than black, for the reason `accent_tint` mixes
+/// towards the card: on Slate and Charcoal the body text is the light end of
+/// the scale, and darkening there would sink the text into its own
+/// background. Deepening is the same gesture in both polarities — away from
+/// the surface, towards whatever this theme reads as ink.
+pub fn deepen(color: Color32, palette: &elegance::Palette, amount: f32) -> Color32 {
+    mix(color, palette.text, amount)
+}
+
 /// Blends two colours in linear space. Used to recede an accent colour
 /// towards the body text colour without depending on the theme's polarity,
 /// which `gamma_multiply` alone cannot do.
@@ -289,6 +301,34 @@ mod tests {
         assert_eq!(mix(black, white, 0.0), black);
         assert_eq!(mix(black, white, 1.0), white);
         assert_eq!(mix(black, white, 0.5), Color32::from_rgb(128, 128, 128));
+    }
+
+    /// Brightness has to be judged whole, not channel by channel: the blue
+    /// accent's red is darker than the body text's, so deepening on a light
+    /// theme lifts that one channel while the colour overall goes down.
+    fn luminance(c: Color32) -> f32 {
+        0.2126 * c.r() as f32 + 0.7152 * c.g() as f32 + 0.0722 * c.b() as f32
+    }
+
+    /// The point of deepening towards the theme's text rather than towards
+    /// black: on a dark theme the same call has to lighten, or it would push
+    /// the text into its own background.
+    #[test]
+    fn deepening_follows_the_theme_polarity() {
+        let accent = Color32::from_rgb(0x0f, 0x6c, 0xbd);
+
+        let mut light = elegance::Theme::frost().palette;
+        light.is_dark = false;
+        light.text = Color32::from_rgb(0x24, 0x24, 0x24);
+        assert!(luminance(deepen(accent, &light, 0.25)) < luminance(accent));
+
+        let mut dark = elegance::Theme::slate().palette;
+        dark.is_dark = true;
+        dark.text = Color32::from_rgb(0xe6, 0xe6, 0xe6);
+        assert!(luminance(deepen(accent, &dark, 0.25)) > luminance(accent));
+
+        assert_eq!(deepen(accent, &light, 0.0), accent);
+        assert_eq!(deepen(accent, &light, 1.0), light.text);
     }
 
     #[test]

@@ -345,9 +345,13 @@ fn draw_row(
     let weak = visuals.weak_text_color();
 
     // Subjects carry the accent. A read one recedes towards body text so the
-    // colour still marks the column without shouting on every row.
+    // colour still marks the column without shouting on every row. Both are
+    // then deepened: the accent at full strength is a mid-tone, which on a
+    // white list reads as lighter than the sender above it and lets the
+    // subject — the line actually being scanned — sit back from the row.
     let subject_color =
         if unread { palette.blue } else { super::mix(palette.blue, palette.text_muted, 0.4) };
+    let subject_color = super::deepen(subject_color, palette, 0.25);
 
     let size = input.font.size;
     // A bar down the whole row, not a dot beside one line: at a glance the
@@ -438,13 +442,17 @@ fn draw_row(
         }
 
         if !envelope.preview.is_empty() {
+            // The muted text colour rather than `weak`, which is body text
+            // thinned by alpha until it half-dissolves into the row. The
+            // synopsis is there to be read at a glance; it should be quieter
+            // than the subject, not faint.
             let _ = paint_truncated(
                 painter,
                 pos2(preview_left, rect.top() + metrics.preview_y),
                 right - preview_left,
                 &envelope.preview,
                 font(size * 0.82),
-                weak,
+                palette.text_muted,
             );
         }
     }
