@@ -172,11 +172,17 @@ fn folder_row(ui: &mut egui::Ui, candidate: Candidate<'_>, theme: &Theme, height
 
     let font = egui::TextStyle::Body.resolve(ui.style());
     let colour = if candidate.matched { palette.text } else { palette.text_muted };
-    ui.painter().text(
-        egui::pos2(rect.left() + 10.0, rect.center().y),
-        egui::Align2::LEFT_CENTER,
-        crate::mail::model::display_folder(&candidate.mailbox.name),
+    // Centred on the capitals rather than on the line box: the two coincide
+    // for the bundled face and for almost nothing else. See `TextMetrics`.
+    let metrics = super::TextMetrics::measure(ui.painter(), &font);
+    let galley = ui.painter().layout_no_wrap(
+        crate::mail::model::display_folder(&candidate.mailbox.name).to_string(),
         font,
+        colour,
+    );
+    ui.painter().galley(
+        egui::pos2(rect.left() + 10.0, metrics.top_for_centred_caps(rect.center().y)),
+        galley,
         colour,
     );
 

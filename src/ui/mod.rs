@@ -166,6 +166,54 @@ pub fn format_size(bytes: usize) -> String {
 /// lines shorten the same way when a pane is narrow. Returns whether the text
 /// had to be shortened, which callers use to decide if a tooltip would tell
 /// the reader anything they cannot already see.
+/// Where the ink sits inside a line of text.
+///
+/// The nominal font size says nothing about this: a line box reserves room
+/// for ascenders and descenders, so its centre is not where the letters look
+/// centred, and its top is not where they start.
+pub struct TextMetrics {
+    /// Baseline, measured down from the top of the line box.
+    baseline: f32,
+    /// Height of a capital letter, measured from the ink of an "X".
+    cap_height: f32,
+}
+
+impl TextMetrics {
+    /// The y that a mark beside the text should be centred on.
+    ///
+    /// The middle of the capitals, which is what the eye reads as the middle
+    /// of a line of text. Two other answers are available and both are wrong:
+    /// the middle of the line box sits well under the letters, because the
+    /// box reserves a descender's worth of space that most words never use;
+    /// and standing a mark on the baseline leaves it riding high whenever it
+    /// is taller than a capital, which an icon usually is.
+    pub fn caps_centre(&self, top: f32) -> f32 {
+        top + self.baseline - self.cap_height * 0.5
+    }
+
+    /// Where to draw a galley so its capitals are centred on `centre`.
+    ///
+    /// Centring the line box instead only works for a font whose baseline
+    /// sits at the middle of the capitals — which the bundled face does,
+    /// almost exactly, and most others do not. Candara's box is half as tall
+    /// again as its capitals and hangs well below them, so centring the box
+    /// leaves the letters pressed against the top of the row.
+    pub fn top_for_centred_caps(&self, centre: f32) -> f32 {
+        centre + self.cap_height * 0.5 - self.baseline
+    }
+
+    pub fn measure(painter: &egui::Painter, font: &FontId) -> Self {
+        let galley = painter.layout_no_wrap("X".to_string(), font.clone(), Color32::PLACEHOLDER);
+        let glyph = galley.rows.first().and_then(|row| {
+            row.row.glyphs.first().map(|glyph| (row.pos.y + glyph.pos.y, glyph.uv_rect.size.y))
+        });
+        // A font with no glyph for "X" is not worth a special case; the
+        // proportions of a typical face are close enough to keep going.
+        let (baseline, cap_height) = glyph.unwrap_or((font.size * 0.8, font.size * 0.7));
+        Self { baseline, cap_height }
+    }
+}
+
 pub fn paint_truncated(
     painter: &egui::Painter,
     position: egui::Pos2,
