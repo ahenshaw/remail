@@ -126,9 +126,13 @@ subject:invoice from:jane
 | `"two words"` | a phrase |
 | `-term` | exclude |
 | `OR`, `( )` | alternatives and grouping; AND binds tighter than OR |
+| `AND` | optional: the space between terms already means it |
 
 So `subject:report -from:noreply since:2w` is three terms, and
-`(from:jane OR from:paul) has:attachment` is two.
+`(from:jane OR from:paul) has:attachment` is two. `subject:pickleball AND
+from:dupr` is the same query as `subject:pickleball from:dupr`; write the
+conjunction or leave it out. To search for the words themselves, quote them:
+`"and"`.
 
 Two places where the filter and the search differ, both because the cache
 holds envelopes rather than whole messages:

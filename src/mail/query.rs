@@ -6,9 +6,10 @@
 //! subject:invoice from:accounts
 //! ```
 //!
-//! `OR` joins alternatives, `-` negates, and parentheses group. A term with
-//! no field searches subject, sender and recipient together, which is what a
-//! bare word has always done here.
+//! `OR` joins alternatives, `-` negates, and parentheses group. `AND` may be
+//! written out where the space already means it, since people reach for it
+//! without thinking. A term with no field searches subject, sender and
+//! recipient together, which is what a bare word has always done here.
 //!
 //! The same parse tree drives both halves of search, which is the point of
 //! putting it in one place:
@@ -136,6 +137,7 @@ enum Token {
     Open,
     Close,
     Or,
+    And,
     Not,
     /// A bare or `field:`-prefixed word. The value keeps its original case;
     /// matching lowercases both sides.
@@ -199,10 +201,14 @@ fn read_word(chars: &[char], start: usize) -> Result<(Token, usize)> {
     if first.text.is_empty() {
         bail!("empty search term");
     }
-    // `OR` is only an operator when written bare; `"or"` searches for the
-    // word, which is the escape hatch for a message about conjunctions.
+    // `OR` and `AND` are only operators when written bare; `"or"` searches
+    // for the word, which is the escape hatch for a message about
+    // conjunctions.
     if !first.was_quoted && first.text.eq_ignore_ascii_case("or") {
         return Ok((Token::Or, at));
+    }
+    if !first.was_quoted && first.text.eq_ignore_ascii_case("and") {
+        return Ok((Token::And, at));
     }
     Ok((Token::Word { field: None, value: first.text }, at))
 }
@@ -272,14 +278,28 @@ impl Parser<'_> {
         Ok(if parts.len() == 1 { parts.pop().unwrap() } else { Node::Or(parts) })
     }
 
-    /// `and := unary*`, with juxtaposition meaning AND.
+    /// `and := unary ( "AND"? unary )*`, with juxtaposition meaning AND.
+    ///
+    /// Writing the conjunction out is allowed because people do it without
+    /// thinking — `subject:invoice and from:jane` — and reading it as one
+    /// more word to search for turns a query that should match into one that
+    /// cannot: the word has to be in the subject or an address as well.
     fn parse_and(&mut self) -> Result<Node> {
         let mut parts = Vec::new();
         while let Some(token) = self.peek() {
-            if matches!(token, Token::Or | Token::Close) {
-                break;
+            match token {
+                Token::Or | Token::Close => break,
+                Token::And => {
+                    if parts.is_empty() {
+                        bail!("`AND` needs something before it");
+                    }
+                    self.at += 1;
+                    if !matches!(self.peek(), Some(Token::Word { .. } | Token::Not | Token::Open)) {
+                        bail!("`AND` needs something after it");
+                    }
+                }
+                _ => parts.push(self.parse_unary()?),
             }
-            parts.push(self.parse_unary()?);
         }
         match parts.len() {
             // Only the whole query may be empty, and that is handled before
@@ -318,6 +338,7 @@ impl Parser<'_> {
                 Ok(Node::Term(term(field.as_deref(), &value)?))
             }
             Some(Token::Or) => bail!("`OR` needs something before it"),
+            Some(Token::And) => bail!("`AND` needs something before it"),
             Some(Token::Close) | None => bail!("expected a search term"),
         }
     }
@@ -601,6 +622,43 @@ mod tests {
     #[test]
     fn terms_are_anded_by_juxtaposition() {
         assert_eq!(imap("subject:invoice from:jane"), r#"SUBJECT "invoice" FROM "jane""#);
+    }
+
+    /// Writing the conjunction out has to mean the conjunction. Read as a
+    /// word it would be one more thing to find in the subject or an address,
+    /// and a query that should match would return nothing.
+    #[test]
+    fn and_may_be_written_out() {
+        assert_eq!(imap("subject:pickleball and from:dupr"), r#"SUBJECT "pickleball" FROM "dupr""#);
+        assert_eq!(imap("subject:pickleball AND from:dupr"), imap("subject:pickleball from:dupr"));
+        assert_eq!(imap("a AND b AND c"), imap("a b c"));
+    }
+
+    #[test]
+    fn an_explicit_and_still_binds_tighter_than_or() {
+        assert_eq!(imap("subject:x AND from:y OR to:z"), imap("subject:x from:y OR to:z"));
+    }
+
+    #[test]
+    fn and_joins_negated_and_grouped_terms_too() {
+        assert_eq!(imap("subject:x AND -from:y"), imap("subject:x -from:y"));
+        assert_eq!(imap("subject:x AND (from:y OR to:z)"), imap("subject:x (from:y OR to:z)"));
+    }
+
+    /// The escape hatch: a message actually about the word.
+    #[test]
+    fn a_quoted_and_is_searched_for() {
+        assert_eq!(imap(r#""and""#), r#"(OR OR SUBJECT "and" FROM "and" TO "and")"#);
+        assert_eq!(imap(r#"subject:and"#), r#"SUBJECT "and""#);
+    }
+
+    #[test]
+    fn a_dangling_and_is_an_error() {
+        assert!(Query::parse("and").is_err());
+        assert!(Query::parse("subject:x and").is_err());
+        assert!(Query::parse("and subject:x").is_err());
+        assert!(Query::parse("subject:x and and from:y").is_err());
+        assert!(Query::parse("subject:x and OR from:y").is_err());
     }
 
     #[test]
