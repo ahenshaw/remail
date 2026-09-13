@@ -1579,6 +1579,22 @@ impl RemailApp {
             "No messages"
         };
 
+        // Sent and Drafts show who a message went to rather than who it came
+        // from, which in those folders is always the account itself.
+        let outgoing: std::collections::BTreeSet<String> = self
+            .accounts
+            .get(&account)
+            .map(|view| {
+                view.mailboxes
+                    .iter()
+                    .filter(|mailbox| {
+                        matches!(mailbox.special, SpecialUse::Sent | SpecialUse::Drafts)
+                    })
+                    .map(|mailbox| mailbox.name.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+
         let scroll_to_cursor = std::mem::take(&mut self.scroll_to_cursor);
         let output = message_list::show(
             ui,
@@ -1591,6 +1607,7 @@ impl RemailApp {
                 // Always while searching: the whole point of a result is
                 // that it came from somewhere you were not looking.
                 show_folder: self.search_results.is_some(),
+                outgoing: &outgoing,
                 theme: &self.theme,
                 font,
                 surface,

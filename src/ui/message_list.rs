@@ -22,6 +22,11 @@ pub struct ListInput<'a> {
     /// Show each row's folder. Set when the view spans mailboxes, where the
     /// subject alone does not say where a message lives.
     pub show_folder: bool,
+    /// Mailboxes holding mail the user sent. A row from one of these shows
+    /// who the message went to, since the sender is the account itself and
+    /// says nothing. Kept per row rather than per pane because a search
+    /// spans folders, and a result from Sent wants the same treatment there.
+    pub outgoing: &'a BTreeSet<String>,
     pub theme: &'a elegance::Theme,
     pub compact: bool,
     /// Font this pane draws in.
@@ -382,11 +387,15 @@ fn draw_row(
         width + 10.0
     };
 
-    let sender = envelope
-        .from
-        .first()
-        .map(|a| a.short().to_string())
-        .unwrap_or_else(|| "(unknown sender)".to_string());
+    let sender = if input.outgoing.contains(&envelope.mailbox) {
+        recipients(envelope)
+    } else {
+        envelope
+            .from
+            .first()
+            .map(|a| a.short().to_string())
+            .unwrap_or_else(|| "(unknown sender)".to_string())
+    };
 
     let first_line_width = (right - date_width - text_left).max(40.0);
     let _ = paint_truncated(
@@ -481,6 +490,21 @@ fn draw_row(
 }
 
 /// Subject for a compact row, with the folder appended while searching.
+/// Who a sent message went to, for the line that carries the sender
+/// everywhere else.
+///
+/// One name and a count, rather than as many as happen to fit: the column is
+/// narrow, and a list of names truncated mid-word says less than a name and
+/// the number of people beside it.
+fn recipients(envelope: &Envelope) -> String {
+    let mut addrs = envelope.to.iter().chain(envelope.cc.iter());
+    let Some(first) = addrs.next() else { return "(no recipients)".to_string() };
+    match addrs.count() {
+        0 => first.short().to_string(),
+        rest => format!("{}, +{rest}", first.short()),
+    }
+}
+
 fn compact_subject(envelope: &Envelope, show_folder: bool) -> String {
     let subject = display_subject(envelope);
     let folder = envelope.folder_label();
@@ -498,6 +522,41 @@ fn display_subject(envelope: &Envelope) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use crate::mail::Addr;
+
+    fn addr(name: &str, email: &str) -> Addr {
+        Addr { name: name.to_string(), email: email.to_string() }
+    }
+
+    #[test]
+    fn a_sent_message_is_summarised_by_who_it_went_to() {
+        let one = Envelope {
+            to: vec![addr("Walter Brill", "wbrill6@example.com")],
+            ..Default::default()
+        };
+        assert_eq!(recipients(&one), "Walter Brill");
+
+        // An address with no display name still has to name someone.
+        let bare = Envelope { to: vec![addr("", "karen@example.com")], ..Default::default() };
+        assert_eq!(recipients(&bare), "karen@example.com");
+    }
+
+    #[test]
+    fn the_rest_of_the_recipients_are_counted_not_listed() {
+        let many = Envelope {
+            to: vec![addr("Michele", "m@example.com"), addr("Lance Wolin", "lance@example.net")],
+            cc: vec![addr("", "andrew@example.org")],
+            ..Default::default()
+        };
+        // Two more beyond the first, counting Cc: everyone who got it.
+        assert_eq!(recipients(&many), "Michele, +2");
+    }
+
+    #[test]
+    fn a_sent_message_with_no_recipients_says_so() {
+        assert_eq!(recipients(&Envelope::default()), "(no recipients)");
+    }
 
     #[test]
     fn rows_leave_room_for_every_line() {
