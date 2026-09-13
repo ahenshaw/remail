@@ -8,7 +8,7 @@
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
-use egui::{Context, FontData, FontDefinitions, FontFamily};
+use egui::{Context, FontData, FontFamily};
 
 use crate::config::PaneFont;
 
@@ -16,8 +16,10 @@ pub struct FontLibrary {
     db: fontdb::Database,
     /// Family names offered in the picker, sorted case-insensitively.
     families: Vec<String>,
-    /// Definitions as currently installed, extended as families are used.
-    definitions: FontDefinitions,
+    /// Families handed to egui so far, kept only so a reinstall can rebuild
+    /// the set. The registry itself is read back from the context rather than
+    /// mirrored here; see [`FontLibrary::install`].
+    faces: Vec<(String, Arc<FontData>)>,
     installed: BTreeSet<String>,
     /// Families that could not be loaded, so the failure is not retried
     /// every frame.
@@ -52,7 +54,7 @@ impl FontLibrary {
         Self {
             db,
             families,
-            definitions: FontDefinitions::default(),
+            faces: Vec::new(),
             installed: BTreeSet::new(),
             failed: BTreeSet::new(),
             resolved: HashMap::new(),
@@ -111,22 +113,37 @@ impl FontLibrary {
     }
 
     /// Hands a family's face data to egui. Returns whether it was found.
+    ///
+    /// The registry is read back out of the context and added to, rather than
+    /// built up from `FontDefinitions::default()`. `set_fonts` replaces the
+    /// registry outright: starting from the defaults would drop every face
+    /// the defaults do not name, and the theme registers one of those — the
+    /// symbols font that draws the interface's icons. Losing it left glyphs
+    /// like the folder and trash marks to be found in whatever face would
+    /// take them, which is a different face with different metrics, so
+    /// controls sized from their text quietly changed height.
     fn install(&mut self, ctx: &Context, name: &str) -> bool {
         let Some(data) = self.face_data(name) else { return false };
 
         let key = format!("system:{name}");
-        self.definitions.font_data.insert(key.clone(), Arc::new(FontData::from_owned(data)));
+        self.faces.push((key, Arc::new(FontData::from_owned(data))));
 
-        // Fall back to the built-in faces so glyphs the chosen family
-        // lacks — emoji, most often — still render.
-        let mut chain = vec![key];
-        chain.extend(
-            self.definitions.families.get(&FontFamily::Proportional).cloned().unwrap_or_default(),
-        );
-        self.definitions.families.insert(FontFamily::Name(name.into()), chain);
+        let mut definitions = ctx.fonts(|fonts| fonts.definitions().clone());
+        for (key, data) in &self.faces {
+            definitions.font_data.insert(key.clone(), data.clone());
+
+            // Fall back to the built-in faces so glyphs the chosen family
+            // lacks — emoji, most often — still render.
+            let family = key.strip_prefix("system:").unwrap_or(key);
+            let mut chain = vec![key.clone()];
+            chain.extend(
+                definitions.families.get(&FontFamily::Proportional).cloned().unwrap_or_default(),
+            );
+            definitions.families.insert(FontFamily::Name(family.into()), chain);
+        }
 
         // Re-rasterizes every glyph, which is why this is once per family.
-        ctx.set_fonts(self.definitions.clone());
+        ctx.set_fonts(definitions);
         self.installed.insert(name.to_string());
         true
     }
@@ -159,7 +176,7 @@ mod tests {
         let mut library = FontLibrary {
             db: fontdb::Database::new(),
             families: Vec::new(),
-            definitions: FontDefinitions::default(),
+            faces: Vec::new(),
             installed: BTreeSet::new(),
             failed: BTreeSet::new(),
             resolved: HashMap::new(),
@@ -169,6 +186,65 @@ mod tests {
         assert_eq!(library.resolve(&ctx, &PaneFont::Mono), FontFamily::Monospace);
     }
 
+    /// Installing a pane font must not cost the interface its icons.
+    ///
+    /// `set_fonts` replaces the whole registry, so the set handed to it has
+    /// to be the one already in the context. Built from
+    /// `FontDefinitions::default()` instead, it silently dropped the symbols
+    /// font the theme registers: the icon glyphs then came from whatever
+    /// face would take them, which changed both how they looked and how tall
+    /// the controls drawn around them were.
+    #[test]
+    fn a_pane_font_does_not_evict_the_theme_symbols() {
+        let ctx = Context::default();
+        crate::config::ThemeChoice::Outlook.theme().install(&ctx);
+
+        let mut library = FontLibrary::load();
+        // Any real family will do; the point is that installing one is what
+        // rewrites the registry.
+        let Some(family) = library.families().first().cloned() else {
+            return; // A machine with no system fonts has nothing to install.
+        };
+
+        let raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::pos2(0.0, 0.0),
+                egui::vec2(200.0, 60.0),
+            )),
+            ..Default::default()
+        };
+
+        let registered = |ctx: &Context, key: &str| -> bool {
+            ctx.fonts(|fonts| fonts.definitions().font_data.contains_key(key))
+        };
+
+        let mut out = ctx.run_ui(raw.clone(), |ui| {
+            assert!(registered(ui.ctx(), "elegance-symbols"), "the theme registers them");
+        });
+        out.textures_delta.clear();
+
+        // Two passes: one to hand the family over, one to see the set that
+        // came back.
+        for _ in 0..2 {
+            let mut out = ctx.run_ui(raw.clone(), |ui| {
+                let _ = library.resolve(ui.ctx(), &PaneFont::Named(family.clone()));
+            });
+            out.textures_delta.clear();
+        }
+
+        let mut out = ctx.run_ui(raw, |ui| {
+            assert!(
+                registered(ui.ctx(), &format!("system:{family}")),
+                "{family} never reached the registry, so this proves nothing"
+            );
+            assert!(
+                registered(ui.ctx(), "elegance-symbols"),
+                "installing {family} evicted the theme's symbols font"
+            );
+        });
+        out.textures_delta.clear();
+    }
+
     /// A missing family never reaches the font set, so this stays off the
     /// path that needs a live frame.
     #[test]
@@ -176,7 +252,7 @@ mod tests {
         let mut library = FontLibrary {
             db: fontdb::Database::new(),
             families: Vec::new(),
-            definitions: FontDefinitions::default(),
+            faces: Vec::new(),
             installed: BTreeSet::new(),
             failed: BTreeSet::new(),
             resolved: HashMap::new(),
