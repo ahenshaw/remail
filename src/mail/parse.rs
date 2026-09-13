@@ -38,15 +38,17 @@ pub fn parse_body(raw: &[u8]) -> MessageBody {
         if data.is_empty() {
             continue;
         }
-        // A part with a Content-ID is referenced from the HTML body by
-        // `cid:`; it belongs in the document, not the attachment bar.
-        match part.content_id() {
-            Some(cid) if !cid.is_empty() => inline.push(InlinePart {
-                content_id: cid.trim_matches(['<', '>']).to_string(),
-                mime,
-                data,
-            }),
-            _ => attachments.push(Attachment {
+        // A part carrying a Content-ID is usually referenced from the HTML
+        // body by `cid:`, which puts it in the document rather than the
+        // attachment bar.
+        let cid = part
+            .content_id()
+            .map(|cid| cid.trim_matches(['<', '>']))
+            .filter(|cid| !cid.is_empty())
+            .filter(|cid| is_document_resource(part, cid, html.as_deref()));
+        match cid {
+            Some(cid) => inline.push(InlinePart { content_id: cid.to_string(), mime, data }),
+            None => attachments.push(Attachment {
                 filename: part
                     .attachment_name()
                     .map(str::to_string)
@@ -124,6 +126,43 @@ fn addrs(address: Option<&MpAddress<'_>>) -> Vec<Addr> {
             Some(Addr { name: a.name().unwrap_or_default().to_string(), email })
         })
         .collect()
+}
+
+/// Whether a part that carries a `Content-ID` belongs in the document rather
+/// than the attachment bar.
+///
+/// Having an identifier is not the same as being used by the body. Outlook
+/// gives every part a `Content-ID`, real attachments included, so a part the
+/// sender explicitly marked `Content-Disposition: attachment` stays an
+/// attachment — unless the HTML does reference it, which a few senders rely
+/// on to show a file both in the body and in the bar.
+fn is_document_resource(
+    part: &mail_parser::MessagePart<'_>,
+    cid: &str,
+    html: Option<&str>,
+) -> bool {
+    if !part.content_disposition().is_some_and(|d| d.is_attachment()) {
+        return true;
+    }
+    html.is_some_and(|html| references_cid(html, cid))
+}
+
+/// Whether `html` points at `cid` through a `cid:` URL.
+fn references_cid(html: &str, cid: &str) -> bool {
+    // The scheme is case-insensitive but the identifier after it is not, so
+    // the search is done on a lowercased copy and the comparison on the
+    // original. `to_ascii_lowercase` only rewrites ASCII bytes in place, so
+    // offsets into the copy are offsets into `html`.
+    let lower = html.to_ascii_lowercase();
+    lower.match_indices("cid:").any(|(at, _)| {
+        html[at + "cid:".len()..].strip_prefix(cid).is_some_and(|rest| {
+            // Stop at the end of the URL, so `cid:logo` does not answer for a
+            // message that only mentions `cid:logo2`.
+            rest.is_empty()
+                || rest.starts_with(['"', '\'', '>', ')', '?', '#'])
+                || rest.starts_with(char::is_whitespace)
+        })
+    })
 }
 
 fn mime_of(part: &mail_parser::MessagePart<'_>) -> String {
@@ -225,6 +264,87 @@ mod tests {
         let preview = body.preview();
         assert!(!preview.contains("display"), "preview leaked CSS: {preview}");
         assert!(preview.contains("Real content"), "preview lost content: {preview}");
+    }
+
+    /// Outlook stamps a `Content-ID` on real attachments too, so the
+    /// identifier alone must not divert a file out of the attachment bar.
+    #[test]
+    fn keeps_a_dispositioned_attachment_that_also_has_a_content_id() {
+        let raw = b"From: a@example.com\r\n\
+                    Subject: Spreadsheet\r\n\
+                    MIME-Version: 1.0\r\n\
+                    Content-Type: multipart/mixed; boundary=\"b\"\r\n\
+                    \r\n\
+                    --b\r\n\
+                    Content-Type: text/html; charset=utf-8\r\n\
+                    \r\n\
+                    <p>See attached</p>\r\n\
+                    --b\r\n\
+                    Content-Type: application/octet-stream\r\n\
+                    Content-ID: <d12120c0-a7fb>\r\n\
+                    Content-Disposition: attachment; filename=\"tracking.xlsx\"\r\n\
+                    \r\n\
+                    payload\r\n\
+                    --b--\r\n";
+        let body = parse_body(raw);
+        assert!(body.inline.is_empty(), "attachment was hidden in the document: {:?}", body.inline);
+        assert_eq!(body.attachments.len(), 1);
+        assert_eq!(body.attachments[0].filename, "tracking.xlsx");
+    }
+
+    /// The same part, but the body really does draw it: then it is both.
+    #[test]
+    fn treats_a_referenced_attachment_as_a_document_resource() {
+        let raw = b"From: a@example.com\r\n\
+                    Subject: Logo\r\n\
+                    MIME-Version: 1.0\r\n\
+                    Content-Type: multipart/mixed; boundary=\"b\"\r\n\
+                    \r\n\
+                    --b\r\n\
+                    Content-Type: text/html; charset=utf-8\r\n\
+                    \r\n\
+                    <img src=\"CID:logo\">\r\n\
+                    --b\r\n\
+                    Content-Type: image/png\r\n\
+                    Content-ID: <logo>\r\n\
+                    Content-Disposition: attachment; filename=\"logo.png\"\r\n\
+                    \r\n\
+                    payload\r\n\
+                    --b--\r\n";
+        let body = parse_body(raw);
+        assert_eq!(body.inline.len(), 1, "referenced image never reached the document");
+        assert_eq!(body.inline[0].content_id, "logo");
+    }
+
+    /// An inline image carries no disposition at all; it stays in the body.
+    #[test]
+    fn keeps_an_undispositioned_content_id_part_inline() {
+        let raw = b"From: a@example.com\r\n\
+                    Subject: Inline\r\n\
+                    MIME-Version: 1.0\r\n\
+                    Content-Type: multipart/related; boundary=\"b\"\r\n\
+                    \r\n\
+                    --b\r\n\
+                    Content-Type: text/html; charset=utf-8\r\n\
+                    \r\n\
+                    <img src=\"cid:pic\">\r\n\
+                    --b\r\n\
+                    Content-Type: image/png\r\n\
+                    Content-ID: <pic>\r\n\
+                    \r\n\
+                    payload\r\n\
+                    --b--\r\n";
+        let body = parse_body(raw);
+        assert_eq!(body.inline.len(), 1);
+        assert!(body.attachments.is_empty());
+    }
+
+    #[test]
+    fn matches_cid_references_only_at_the_end_of_the_url() {
+        assert!(references_cid("<img src=\"cid:logo\">", "logo"));
+        assert!(references_cid("<img src='CID:logo'>", "logo"));
+        assert!(!references_cid("<img src=\"cid:logo2\">", "logo"));
+        assert!(!references_cid("<p>cid:other</p>", "logo"));
     }
 
     #[test]
