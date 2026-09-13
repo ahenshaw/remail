@@ -824,3 +824,63 @@ mod tests {
         assert!(accepts_drop(&folder("Work", true), 1, &dragged(1, &["Work", "INBOX"])));
     }
 }
+
+#[cfg(test)]
+mod render_tests {
+    use super::*;
+
+    /// Writes a picture of the folder rows, for looking at spacing and
+    /// alignment without launching the application.
+    ///
+    ///     REMAIL_RENDER=/tmp/rows.png REMAIL_SIZE=15.6 \
+    ///         cargo test render_sidebar_rows -- --ignored
+    #[test]
+    #[ignore = "writes a file; run it when you want to look at something"]
+    fn render_sidebar_rows() {
+        let out = std::env::var("REMAIL_RENDER").unwrap_or_else(|_| "/tmp/rows.png".into());
+        let size: f32 =
+            std::env::var("REMAIL_SIZE").ok().and_then(|v| v.parse().ok()).unwrap_or(14.0);
+        let theme = crate::config::ThemeChoice::Outlook.theme();
+        let font = FontId::new(size, egui::FontFamily::Proportional);
+        let row_height = (size * 1.5).round();
+        println!("size {size}, row_height {row_height}");
+
+        let names: [(&str, SpecialUse); 6] = [
+            ("Inbox", SpecialUse::Inbox),
+            ("Reports", SpecialUse::Normal),
+            ("Work", SpecialUse::Normal),
+            ("Trash", SpecialUse::Trash),
+            ("Drafts", SpecialUse::Drafts),
+            ("Engineering", SpecialUse::Normal),
+        ];
+
+        crate::ui::raster::render(&out, 190.0, 6.0 * (row_height + 1.0) + 4.0, 5.0, move |ui| {
+            egui::CentralPanel::default().show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 1.0;
+                for (index, (name, special)) in names.iter().enumerate() {
+                    let mailbox = MailboxInfo {
+                        name: (*name).to_string(),
+                        delimiter: Some("/".into()),
+                        special: *special,
+                        selectable: true,
+                        unseen: 0,
+                    };
+                    mailbox_row(
+                        ui,
+                        RowInput {
+                            mailbox: &mailbox,
+                            depth: 0,
+                            selected: index % 2 == 0,
+                            has_children: false,
+                            collapsed: false,
+                            account: 1,
+                            font: &font,
+                            row_height,
+                            palette: &theme.palette,
+                        },
+                    );
+                }
+            });
+        });
+    }
+}

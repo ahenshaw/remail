@@ -264,3 +264,185 @@ mod tests {
         assert_eq!(format_date_long(0), "unknown date");
     }
 }
+
+#[cfg(test)]
+pub mod raster {
+
+    /// A minimal software rasteriser for egui's output.
+    ///
+    /// Enough to look at what the interface actually draws, without a window
+    /// or a GPU: textured, vertex-coloured triangles into an RGBA buffer.
+    struct Canvas {
+        width: usize,
+        height: usize,
+        pixels: Vec<[f32; 4]>,
+        font: Option<(usize, usize, Vec<f32>)>,
+    }
+
+    impl Canvas {
+        fn new(width: usize, height: usize) -> Self {
+            Self {
+                width,
+                height,
+                pixels: vec![[0.96, 0.96, 0.96, 1.0]; width * height],
+                font: None,
+            }
+        }
+
+        fn set_font(&mut self, image: &egui::ColorImage) {
+            let coverage = image.pixels.iter().map(|p| p.a() as f32 / 255.0).collect();
+            self.font = Some((image.width(), image.height(), coverage));
+        }
+
+        fn sample(&self, u: f32, v: f32) -> f32 {
+            let Some((w, h, data)) = &self.font else { return 1.0 };
+            let x = ((u * *w as f32).round() as isize).clamp(0, *w as isize - 1) as usize;
+            let y = ((v * *h as f32).round() as isize).clamp(0, *h as isize - 1) as usize;
+            data[y * w + x]
+        }
+
+        fn blend(&mut self, x: usize, y: usize, rgba: [f32; 4]) {
+            let dst = &mut self.pixels[y * self.width + x];
+            let a = rgba[3];
+            for c in 0..3 {
+                dst[c] = rgba[c] * a + dst[c] * (1.0 - a);
+            }
+        }
+
+        fn triangle(&mut self, v: [&egui::epaint::Vertex; 3], textured: bool, scale: f32) {
+            let pt = |p: egui::Pos2| (p.x * scale, p.y * scale);
+            let (x0, y0) = pt(v[0].pos);
+            let (x1, y1) = pt(v[1].pos);
+            let (x2, y2) = pt(v[2].pos);
+
+            let area = (x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0);
+            if area.abs() < 1e-6 {
+                return;
+            }
+
+            let min_x = x0.min(x1).min(x2).floor().max(0.0) as usize;
+            let max_x = (x0.max(x1).max(x2).ceil() as usize).min(self.width - 1);
+            let min_y = y0.min(y1).min(y2).floor().max(0.0) as usize;
+            let max_y = (y0.max(y1).max(y2).ceil() as usize).min(self.height - 1);
+
+            // 2x2 supersampling, so edges are not a staircase.
+            const S: usize = 2;
+            for py in min_y..=max_y {
+                for px in min_x..=max_x {
+                    let mut hits = 0.0;
+                    let mut acc = [0.0_f32; 4];
+                    for sy in 0..S {
+                        for sx in 0..S {
+                            let x = px as f32 + (sx as f32 + 0.5) / S as f32;
+                            let y = py as f32 + (sy as f32 + 0.5) / S as f32;
+                            let w0 = ((x1 - x) * (y2 - y) - (x2 - x) * (y1 - y)) / area;
+                            let w1 = ((x2 - x) * (y0 - y) - (x0 - x) * (y2 - y)) / area;
+                            let w2 = 1.0 - w0 - w1;
+                            if w0 < 0.0 || w1 < 0.0 || w2 < 0.0 {
+                                continue;
+                            }
+                            let mut colour = [0.0_f32; 4];
+                            for (weight, vertex) in [(w0, v[0]), (w1, v[1]), (w2, v[2])] {
+                                let c = vertex.color.to_normalized_gamma_f32();
+                                for i in 0..4 {
+                                    colour[i] += weight * c[i];
+                                }
+                            }
+                            if textured {
+                                let mut uv = [0.0_f32; 2];
+                                for (weight, vertex) in [(w0, v[0]), (w1, v[1]), (w2, v[2])] {
+                                    uv[0] += weight * vertex.uv.x;
+                                    uv[1] += weight * vertex.uv.y;
+                                }
+                                colour[3] *= self.sample(uv[0], uv[1]);
+                            }
+                            for i in 0..4 {
+                                acc[i] += colour[i];
+                            }
+                            hits += 1.0;
+                        }
+                    }
+                    if hits > 0.0 {
+                        let n = (S * S) as f32;
+                        let mut colour = [0.0_f32; 4];
+                        for i in 0..4 {
+                            colour[i] = acc[i] / hits;
+                        }
+                        colour[3] *= hits / n;
+                        self.blend(px, py, colour);
+                    }
+                }
+            }
+        }
+
+        fn write_png(&self, path: &str) {
+            let mut rgba = Vec::with_capacity(self.width * self.height * 4);
+            for pixel in &self.pixels {
+                for channel in &pixel[..3] {
+                    rgba.push((channel.clamp(0.0, 1.0) * 255.0).round() as u8);
+                }
+                rgba.push(255);
+            }
+            image::save_buffer(
+                path,
+                &rgba,
+                self.width as u32,
+                self.height as u32,
+                image::ColorType::Rgba8,
+            )
+            .expect("writing the png");
+        }
+    }
+
+    /// Renders `build` and writes it to `path`, magnified.
+    pub fn render(path: &str, width: f32, height: f32, scale: f32, build: impl Fn(&mut egui::Ui)) {
+        let ctx = egui::Context::default();
+        elegance::Theme::slate().install(&ctx);
+
+        let raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::pos2(0.0, 0.0),
+                egui::vec2(width, height),
+            )),
+            ..Default::default()
+        };
+
+        let mut canvas = Canvas::new((width * scale) as usize, (height * scale) as usize);
+
+        // Two passes: the first uploads the font atlas, and only the first,
+        // so the glyphs have to be taken from it rather than from the second.
+        let mut first = ctx.run_ui(raw.clone(), |ui| build(ui));
+        for (id, deltas) in &first.textures_delta.set {
+            if *id != egui::TextureId::Managed(0) {
+                continue;
+            }
+            for delta in deltas.iter() {
+                let egui::ImageData::Color(image) = &delta.image;
+                canvas.set_font(image);
+            }
+        }
+        first.textures_delta.clear();
+
+        let mut output = ctx.run_ui(raw, |ui| build(ui));
+        output.textures_delta.clear();
+
+        for primitive in ctx.tessellate(output.shapes, 1.0) {
+            let egui::epaint::Primitive::Mesh(mesh) = primitive.primitive else { continue };
+            let textured = mesh.texture_id == egui::TextureId::Managed(0);
+            for triangle in mesh.indices.chunks_exact(3) {
+                let v = [
+                    &mesh.vertices[triangle[0] as usize],
+                    &mesh.vertices[triangle[1] as usize],
+                    &mesh.vertices[triangle[2] as usize],
+                ];
+                // Rects use a fixed white texel; only glyph meshes sample.
+                let glyph =
+                    textured && v.iter().any(|vertex| vertex.uv.x > 0.001 || vertex.uv.y > 0.001);
+                canvas.triangle(v, glyph, scale);
+            }
+        }
+
+        canvas.write_png(path);
+        println!("wrote {path}");
+    }
+}

@@ -187,7 +187,7 @@ fn folder_row(ui: &mut egui::Ui, candidate: Candidate<'_>, theme: &Theme, height
 mod tests {
     use super::*;
 
-    fn mailbox(name: &str, special: SpecialUse, selectable: bool) -> MailboxInfo {
+    pub(super) fn mailbox(name: &str, special: SpecialUse, selectable: bool) -> MailboxInfo {
         MailboxInfo {
             name: name.to_string(),
             delimiter: Some("/".into()),
@@ -251,5 +251,44 @@ mod tests {
         // Case does not matter on either side.
         assert_eq!(found(&[], "INBOX"), ["INBOX"]);
         assert!(found(&[], "nothing").is_empty());
+    }
+}
+
+#[cfg(test)]
+mod render_tests {
+    use super::tests::mailbox;
+    use super::*;
+
+    /// As `render_sidebar_rows`, for the folder picker.
+    #[test]
+    #[ignore = "writes a file; run it when you want to look at something"]
+    fn render_move_dialog() {
+        let out = std::env::var("REMAIL_RENDER").unwrap_or_else(|_| "/tmp/move.png".into());
+        let theme = Theme::slate();
+        let mailboxes = vec![
+            mailbox("INBOX", SpecialUse::Inbox, true),
+            mailbox("Work", SpecialUse::Normal, true),
+            mailbox("Work/Reports", SpecialUse::Normal, true),
+            mailbox("Engineering", SpecialUse::Normal, true),
+            mailbox("[Gmail]/Trash", SpecialUse::Trash, true),
+        ];
+
+        crate::ui::raster::render(&out, 330.0, 300.0, 5.0, move |ui| {
+            let mut dialog =
+                MoveDialog::new(1, vec![crate::mail::RowKey { mailbox: "INBOX".into(), uid: 1 }]);
+            dialog.selected = 1;
+            egui::CentralPanel::default().show(ui, |ui| {
+                let candidates = destinations(&mailboxes, &["INBOX"], "");
+                let row_height = ui.text_style_height(&egui::TextStyle::Body) + 8.0;
+                for (index, mailbox) in candidates.iter().enumerate() {
+                    folder_row(
+                        ui,
+                        Candidate { mailbox, matched: index == dialog.selected },
+                        &theme,
+                        row_height,
+                    );
+                }
+            });
+        });
     }
 }
