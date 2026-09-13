@@ -484,6 +484,34 @@ pub mod raster {
     /// `theme` is installed into the context, so widgets are painted the way
     /// the application paints them rather than in whatever the default
     /// happens to be — which is why several of these came out washed out.
+    /// Runs one layout pass and hands back what the closure measured, for
+    /// tests that care about geometry rather than pixels.
+    pub fn measure<R>(
+        theme: &elegance::Theme,
+        size: egui::Vec2,
+        build: impl FnOnce(&mut egui::Ui) -> R,
+    ) -> R {
+        let ctx = egui::Context::default();
+        theme.clone().install(&ctx);
+
+        let raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), size)),
+            ..Default::default()
+        };
+
+        let mut build = Some(build);
+        let mut measured = None;
+        let mut output = ctx.run_ui(raw, |ui| {
+            if let Some(build) = build.take() {
+                measured = Some(build(ui));
+            }
+        });
+        // Nothing here paints, but the font atlas is still uploaded on the
+        // first pass and epaint panics on a delta that is dropped unhandled.
+        output.textures_delta.clear();
+        measured.expect("the closure runs once")
+    }
+
     pub fn render(
         path: &str,
         theme: &elegance::Theme,

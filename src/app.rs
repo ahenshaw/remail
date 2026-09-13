@@ -31,6 +31,16 @@ const PREFETCH_MARGIN: usize = 6;
 
 /// Hover text for the search box. The language is only useful if it is
 /// discoverable from the box it applies to; see `mail::query`.
+/// Height of every control in the search bar.
+///
+/// The scope selector decides it: `Select` offers no size of its own, and its
+/// typography and the theme's control padding come to 29pt. `ButtonSize`
+/// `Medium` lands on exactly that, and the query box at its full height comes
+/// to a point over — nearer than its compact height is by six, which is what
+/// it was set at while the buttons were `Small` and nothing matched anything.
+/// A point of slack on one control, centred, is not a thing the eye can find.
+const SEARCH_BAR_HEIGHT: f32 = 30.0;
+
 const SEARCH_SYNTAX: &str = "\
 Plain words search subject, sender and recipient.
 
@@ -1466,6 +1476,22 @@ impl RemailApp {
 
     /// Scope selector, query box and a button to drop server-side results.
     fn search_bar(&mut self, ui: &mut egui::Ui) -> Option<Action> {
+        // One row of a known height, so `Align::Center` has a centreline to
+        // work from. Given more room than they need — and the toolbar is
+        // taller than any one of them — these widgets do not agree on what
+        // to do with it: a `Button` centres itself in whatever it is handed,
+        // while `Select` and `TextInput` start at the top. The further apart
+        // the toolbar's height and theirs, the further they drift.
+        ui.allocate_ui_with_layout(
+            egui::vec2(ui.available_width(), SEARCH_BAR_HEIGHT),
+            egui::Layout::left_to_right(egui::Align::Center),
+            |ui| self.search_controls(ui),
+        )
+        .inner
+    }
+
+    /// The controls themselves, laid out by [`Self::search_bar`].
+    fn search_controls(&mut self, ui: &mut egui::Ui) -> Option<Action> {
         let mut action = None;
 
         // Scope applies to the server-side search that Enter runs; the
@@ -1491,7 +1517,7 @@ impl RemailApp {
             let mut include = self.config.read().unwrap().ui.search_spam_and_trash;
             // Filled when it is on, outlined when off: the state has to be
             // readable without hovering for a tooltip.
-            let mut button = Button::new(glyphs::TRASH.to_string()).size(ButtonSize::Small);
+            let mut button = Button::new(glyphs::TRASH.to_string()).size(ButtonSize::Medium);
             button = if include { button.accent(Accent::Blue) } else { button.outline() };
             let toggle = ui.add(button).on_hover_text(if include {
                 "Including Spam and Trash \u{2014} click to exclude them"
@@ -1529,7 +1555,6 @@ impl RemailApp {
                         SearchScope::Subtree => "Search with subfolders",
                         SearchScope::All => "Search all folders",
                     })
-                    .compact(true)
                     .desired_width(width),
             )
             .on_hover_text(SEARCH_SYNTAX);
@@ -1558,7 +1583,7 @@ impl RemailApp {
 
         if clearable
             && ui
-                .add(Button::new(glyphs::X.to_string()).size(ButtonSize::Small).outline())
+                .add(Button::new(glyphs::X.to_string()).size(ButtonSize::Medium).outline())
                 .on_hover_text(if self.search_results.is_some() {
                     "Clear search results (Esc)"
                 } else {
@@ -2129,6 +2154,75 @@ fn pick_files() -> Option<Vec<std::path::PathBuf>> {
 
 #[cfg(test)]
 mod tests {
+    /// The scope selector, the query box and the buttons beside them are one
+    /// row of controls and have to read as one: the same height, on one
+    /// centreline. Nothing in their construction enforces it — each is sized
+    /// by its own padding and typography — so it is asserted here, where a
+    /// change to any of the three sizes will fail rather than quietly go
+    /// crooked.
+    #[test]
+    fn the_search_bar_controls_are_one_height_on_one_centreline() {
+        use crate::mail::SearchScope;
+
+        let theme = crate::config::ThemeChoice::Outlook.theme();
+        // A toolbar far taller than the controls, which is the case that
+        // pulled them apart: a Button centres itself in whatever room it is
+        // given, while Select and TextInput start at the top.
+        let rects = crate::ui::raster::measure(&theme, egui::vec2(560.0, 96.0), |ui| {
+            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                ui.allocate_ui_with_layout(
+                    egui::vec2(ui.available_width(), SEARCH_BAR_HEIGHT),
+                    egui::Layout::left_to_right(egui::Align::Center),
+                    |ui| {
+                        let mut scope = SearchScope::All;
+                        let select = ui.add(
+                            elegance::Select::new("scope", &mut scope)
+                                .options(SearchScope::all().map(|s| (s, s.label())))
+                                .width(132.0),
+                        );
+                        let toggle = ui.add(
+                            Button::new(glyphs::TRASH.to_string())
+                                .size(ButtonSize::Medium)
+                                .outline(),
+                        );
+                        let mut text = "pickleball".to_string();
+                        let input =
+                            ui.add(elegance::TextInput::new(&mut text).desired_width(180.0));
+                        let clear = ui.add(
+                            Button::new(glyphs::X.to_string()).size(ButtonSize::Medium).outline(),
+                        );
+                        [
+                            ("scope", select.rect),
+                            ("spam toggle", toggle.rect),
+                            ("query box", input.rect),
+                            ("clear", clear.rect),
+                        ]
+                    },
+                )
+                .inner
+            })
+            .inner
+        });
+
+        for (name, rect) in rects {
+            assert!(
+                (rect.height() - SEARCH_BAR_HEIGHT).abs() <= 1.5,
+                "{name} is {:.2} tall, the bar is {SEARCH_BAR_HEIGHT}",
+                rect.height()
+            );
+        }
+
+        let centres: Vec<f32> = rects.iter().map(|(_, rect)| rect.center().y).collect();
+        let highest = centres.iter().copied().fold(f32::MAX, f32::min);
+        let lowest = centres.iter().copied().fold(f32::MIN, f32::max);
+        assert!(
+            lowest - highest <= 1.0,
+            "centres are {:.2} apart: {:?}",
+            lowest - highest,
+            rects.map(|(name, rect)| (name, rect.center().y))
+        );
+    }
+
     use super::*;
 
     fn list(uids: &[u32]) -> Vec<Envelope> {
