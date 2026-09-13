@@ -19,7 +19,12 @@ trap 'rm -rf "$root"' EXIT
 
 install -Dm755 "$binary" "$root/usr/bin/remail"
 strip "$root/usr/bin/remail"
-install -Dm644 packaging/linux/remail.desktop "$root/usr/share/applications/remail.desktop"
+# An absolute Exec, so the launcher cannot pick up a different remail that
+# happens to be earlier on the session's PATH.
+install -d "$root/usr/share/applications"
+sed 's|^Exec=remail$|Exec=/usr/bin/remail|' packaging/linux/remail.desktop \
+    > "$root/usr/share/applications/remail.desktop"
+chmod 644 "$root/usr/share/applications/remail.desktop"
 for size in 16 24 32 48 64 128 256 512; do
     install -Dm644 "assets/icons/remail-$size.png" \
         "$root/usr/share/icons/hicolor/${size}x${size}/apps/remail.png"

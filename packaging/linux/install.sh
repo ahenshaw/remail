@@ -38,7 +38,13 @@ else
     fi
 
     install -Dm755 target/release/remail "$prefix/bin/remail"
-    install -Dm644 packaging/linux/remail.desktop "$desktop"
+    # `Exec=remail` in the template resolves through PATH, and a desktop
+    # session's PATH is not the shell's — it routinely lacks ~/.local/bin,
+    # and may hold some other remail entirely. Point the entry at the binary
+    # this script just installed.
+    install -d "$(dirname "$desktop")"
+    sed "s|^Exec=remail$|Exec=$prefix/bin/remail|" packaging/linux/remail.desktop > "$desktop"
+    chmod 644 "$desktop"
     for size in "${icon_sizes[@]}"; do
         install -Dm644 "assets/icons/remail-$size.png" \
             "$prefix/share/icons/hicolor/${size}x${size}/apps/remail.png"

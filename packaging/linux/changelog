@@ -1,3 +1,17 @@
+remail (0.3.0) unstable; urgency=medium
+
+  * Search takes a query language: subject:, from:, to:, cc:, body:, is:,
+    has:attachment, dates and sizes, with OR, negation and grouping.
+  * Messages can be moved into folders, by drag-and-drop onto the sidebar or
+    through a filtered folder picker.
+  * Which folders are open is remembered across restarts.
+  * An application icon, a desktop entry and this package.
+  * Fixes: rows are centred for fonts other than the bundled one, Send stays
+    reachable on a long reply, and the compose window no longer shares a
+    colour with its own text fields.
+
+ -- Andrew Henshaw <henshaw.andrew.m@gmail.com>  Sat, 12 Sep 2026 20:15:31 -0400
+
 remail (0.1.0) unstable; urgency=medium
 
   * Initial release.
