@@ -31,6 +31,67 @@ const PREFETCH_MARGIN: usize = 6;
 
 /// Hover text for the search box. The language is only useful if it is
 /// discoverable from the box it applies to; see `mail::query`.
+/// The `remail-cli` invocation that runs the search currently on screen.
+///
+/// The bridge between the two surfaces: a query built by hand, with the scope
+/// selector and the spam toggle doing what they do, comes back out as
+/// something that can be scripted or handed to an agent. What it must not be
+/// is approximately right — a command that quietly searches somewhere else is
+/// worse than no command at all, so the mailbox is always named (the tool
+/// defaults to the account's, not the one on screen) and the query always
+/// goes after `--` (the query language negates with a leading `-`, which is
+/// otherwise indistinguishable from an option).
+///
+/// `--server` follows what produced what is on screen: results that came back
+/// from an IMAP SEARCH, or the filter over the cache that typing does. The
+/// tool makes the same distinction and defaults the same way.
+fn search_command(
+    query: &str,
+    mailbox: &str,
+    account: Option<AccountId>,
+    scope: SearchScope,
+    spam_and_trash: bool,
+    server: bool,
+) -> String {
+    let mut out = String::from("remail-cli search");
+
+    if let Some(account) = account {
+        out.push_str(&format!(" --account {account}"));
+    }
+    out.push_str(&format!(" --mailbox {}", shell_quote(mailbox)));
+    // How far a search reaches is a question for the server. The filter over
+    // the cache reads the one mailbox it was given, here and in the tool
+    // alike, so carrying the scope across would describe a reach the command
+    // does not have.
+    if server {
+        out.push_str(" --server");
+        match scope {
+            // The tool's own default, so saying it adds nothing.
+            SearchScope::Folder => {}
+            SearchScope::Subtree => out.push_str(" --scope subtree"),
+            SearchScope::All => out.push_str(" --scope all"),
+        }
+        // Only ever meant anything at the widest scope, which is the only
+        // place the interface offers it.
+        if spam_and_trash && scope == SearchScope::All {
+            out.push_str(" --spam-and-trash");
+        }
+    }
+
+    out.push_str(" -- ");
+    out.push_str(&shell_quote(query));
+    out
+}
+
+/// Wraps a word so a shell hands it over exactly as it is.
+///
+/// Single quotes, in which a shell interprets nothing at all — the escape for
+/// a single quote inside them is to leave, quote it, and go back in. Mail
+/// addresses and subjects contain everything eventually.
+fn shell_quote(word: &str) -> String {
+    format!("'{}'", word.replace('\'', r"'\''"))
+}
+
 /// Height of every control in the search bar.
 ///
 /// Sits between the two controls that will not be told: `ButtonSize::Medium`
@@ -59,7 +120,8 @@ Plain words search subject, sender and recipient.
   since:7d before:2026-01-01    dates, or 2w / 3m / 1y
   larger:2m smaller:200k        size
 
-Enter searches the server; typing filters what is already loaded.";
+Enter searches the server; typing filters what is already loaded.
+Right-click for the remail-cli command that runs this search.";
 
 /// The message currently open in the reader.
 struct OpenMessage {
@@ -1604,6 +1666,35 @@ impl RemailApp {
                     .desired_width(width),
             )
             .on_hover_text(SEARCH_SYNTAX);
+        // Right-click rather than another control: the bar is four things
+        // wide already, and nothing else here has a context menu to compete
+        // with — neither egui's text field nor elegance's registers one.
+        let menu = elegance::ContextMenu::new("search-menu").show(&search, |ui| {
+            ui.add_enabled(
+                !self.search.trim().is_empty(),
+                elegance::MenuItem::new("Copy as command"),
+            )
+            .clicked()
+        });
+        if menu == Some(true) {
+            let query = self.search.trim().to_string();
+            let (account, mailbox) = self.open_mailbox.clone().unwrap_or_default();
+            // Named only when there is more than one to choose between; the
+            // tool takes the first enabled account otherwise, which is this
+            // one.
+            let enabled = self.config.read().unwrap().accounts.iter().filter(|a| a.enabled).count();
+            let command = search_command(
+                &query,
+                &mailbox,
+                (enabled > 1).then_some(account),
+                self.search_scope,
+                self.config.read().unwrap().ui.search_spam_and_trash,
+                self.search_results.is_some(),
+            );
+            ui.ctx().copy_text(command.clone());
+            self.status = format!("Copied: {command}");
+        }
+
         // Escape clears from inside the field. The global shortcut cannot:
         // it stands down whenever a text field holds the keyboard, which is
         // exactly when there is a search to abandon. Focus goes back to the
@@ -2211,6 +2302,73 @@ fn pick_files() -> Option<Vec<std::path::PathBuf>> {
 
 #[cfg(test)]
 mod tests {
+    /// The command has to run the search that is on screen, not one like it.
+    /// A command that quietly looks somewhere else is worse than none.
+    #[test]
+    fn the_copied_command_names_everything_that_is_not_a_default() {
+        let plain = search_command("from:dupr", "INBOX", None, SearchScope::Folder, false, false);
+        assert_eq!(plain, "remail-cli search --mailbox 'INBOX' -- 'from:dupr'");
+
+        // The mailbox is always named: the tool defaults to the account's,
+        // which is not necessarily the one being looked at.
+        let elsewhere =
+            search_command("x", "[Gmail]/All Mail", None, SearchScope::Folder, false, false);
+        assert!(elsewhere.contains("--mailbox '[Gmail]/All Mail'"), "{elsewhere}");
+
+        let wide = search_command("x", "INBOX", Some(2), SearchScope::All, true, true);
+        assert_eq!(
+            wide,
+            "remail-cli search --account 2 --mailbox 'INBOX' --server --scope all \
+             --spam-and-trash -- 'x'"
+        );
+    }
+
+    #[test]
+    fn the_copied_command_leaves_out_what_the_tool_already_does() {
+        let folder = search_command("x", "INBOX", None, SearchScope::Folder, false, false);
+        assert!(!folder.contains("--scope"), "the default scope was spelled out: {folder}");
+        assert!(!folder.contains("--server"), "a cache search asked for the server: {folder}");
+        assert!(!folder.contains("--account"), "the only account was named: {folder}");
+
+        // Spam and Trash only mean anything at the widest scope, which is the
+        // only place the interface offers the choice.
+        let narrow = search_command("x", "INBOX", None, SearchScope::All, true, false);
+        assert!(!narrow.contains("--spam-and-trash"), "{narrow}");
+
+        // Reach is the server's business. A cache search reads the mailbox
+        // it is given, so a scope on it would promise something else.
+        let cached = search_command("x", "INBOX", None, SearchScope::All, true, false);
+        assert!(!cached.contains("--scope"), "a cache search claimed a reach it has not: {cached}");
+        let asked = search_command("x", "INBOX", None, SearchScope::All, true, true);
+        assert!(asked.contains("--scope all"), "{asked}");
+    }
+
+    /// The query language negates with a leading `-`, and a subject can
+    /// contain anything at all. Both have to survive the shell.
+    #[test]
+    fn the_copied_command_survives_being_run() {
+        let negated = search_command("-is:read", "INBOX", None, SearchScope::Folder, false, false);
+        assert!(negated.ends_with("-- '-is:read'"), "{negated}");
+
+        let quoted = search_command(
+            "subject:\"it's here\"",
+            "INBOX",
+            None,
+            SearchScope::Folder,
+            false,
+            false,
+        );
+        assert!(quoted.ends_with(r#"-- 'subject:"it'\''s here"'"#), "{quoted}");
+    }
+
+    #[test]
+    fn shell_quoting_closes_and_reopens_around_a_quote() {
+        assert_eq!(shell_quote("plain"), "'plain'");
+        assert_eq!(shell_quote("two words"), "'two words'");
+        assert_eq!(shell_quote("it's"), r"'it'\''s'");
+        assert_eq!(shell_quote(""), "''");
+    }
+
     /// An application with nothing configured, for exercising the state the
     /// interface keeps rather than anything it draws or fetches.
     fn app() -> RemailApp {
