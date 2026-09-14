@@ -557,7 +557,17 @@ fn mailbox_row(ui: &mut Ui, input: RowInput<'_>) -> RowResult {
             size,
         );
         painter.rect_filled(pill, size.y * 0.5, accent);
-        painter.galley(pill.center() - galley.size() * 0.5, galley, on_accent(accent));
+        // Centred on the digits, not on the box around them. A line box
+        // reserves room for a descender that a digit never uses, and how much
+        // depends on the face: the bundled one happens to balance, so
+        // centring the box looks right until the pane is set in something
+        // else and the number rides high.
+        let badge_metrics = TextMetrics::measure(painter, &badge_font);
+        let at = pos2(
+            pill.center().x - galley.size().x * 0.5,
+            badge_metrics.top_for_centred_caps(pill.center().y),
+        );
+        painter.galley(at, galley, on_accent(accent));
     }
 
     // A click on the arrow folds the subtree; anywhere else opens the folder.
@@ -716,6 +726,30 @@ mod tests {
     /// pressed the letters against the top of the row.
     fn candara_15_6() -> TextMetrics {
         TextMetrics { baseline: 13.5, cap_height: 10.0 }
+    }
+
+    /// The count has to sit in the middle of its pill for any face, not just
+    /// for the one that happens to be bundled. Centring the line box is what
+    /// looks right with that one and pushes the number up with the others,
+    /// whose boxes hang below the capitals.
+    #[test]
+    fn the_unread_count_is_centred_on_its_digits_not_on_its_box() {
+        for (name, metrics) in [("bundled", bundled_14()), ("Candara", candara_15_6())] {
+            let centre = 40.0_f32;
+            let top = metrics.top_for_centred_caps(centre);
+
+            // Where the ink actually is: from the top of the capitals down
+            // to the baseline.
+            let ink_top = top + metrics.baseline - metrics.cap_height;
+            let ink_bottom = top + metrics.baseline;
+            let ink_centre = (ink_top + ink_bottom) * 0.5;
+
+            assert!(
+                (ink_centre - centre).abs() < 0.01,
+                "{name}: the digits sit {:.2} off the middle of the pill",
+                ink_centre - centre
+            );
+        }
     }
 
     /// However short the count, the pill keeps its shape. The padding is
