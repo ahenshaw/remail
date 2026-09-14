@@ -556,12 +556,21 @@ impl RemailApp {
                 }
             }
             Action::ClearSearch => {
+                let was_searching = self.searching;
                 self.search.clear();
                 self.search_results = None;
                 self.searching = false;
                 // Whatever is still running out there is now answering a
-                // question that has been withdrawn.
+                // question that has been withdrawn. Telling the engine lets
+                // it stop rather than finish and be ignored, which matters
+                // because it holds the account while it runs.
                 self.search_generation += 1;
+                if was_searching && let Some((account, _)) = self.open_mailbox.clone() {
+                    self.engine.send(Command::CancelSearch {
+                        account,
+                        generation: self.search_generation,
+                    });
+                }
             }
 
             Action::LoadRemoteImages => {

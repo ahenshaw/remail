@@ -10,6 +10,7 @@
 //! mailbox changes.
 
 use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
@@ -41,6 +42,10 @@ mod contact_weight {
 
 /// Most results a search returns, across every mailbox it covers.
 const SEARCH_LIMIT: usize = 500;
+/// How many messages a search fetches per round trip. Smaller than the limit
+/// so that abandoning one is noticed part way through a mailbox rather than
+/// only between mailboxes.
+const SEARCH_BATCH: usize = 100;
 
 /// Cap on how many messages one flag-reconciliation pass examines. Keeps the
 /// per-sync cost bounded on mailboxes with a hundred thousand messages.
@@ -132,6 +137,12 @@ pub enum Command {
         /// can tell them from the results of a search it has since moved on
         /// from — there is no way to stop one that is already running, and a
         /// whole-account search takes long enough to be abandoned.
+        generation: u64,
+    },
+    /// Abandon whatever search is running. Carries the generation that
+    /// supersedes it, which is what a running search compares itself against.
+    CancelSearch {
+        account: AccountId,
         generation: u64,
     },
     /// Run the interactive OAuth flow for an account.
@@ -272,6 +283,7 @@ impl Engine {
             tokens: Arc::new(TokenStore::new()),
             workers: HashMap::new(),
             commands: command_tx.clone(),
+            search_generation: Arc::new(AtomicU64::new(0)),
         };
         runtime.spawn(supervisor.run(command_rx));
 
@@ -335,6 +347,10 @@ struct Supervisor {
     workers: HashMap<AccountId, mpsc::UnboundedSender<Command>>,
     /// Loopback so account workers can queue follow-up commands.
     commands: mpsc::UnboundedSender<Command>,
+    /// The search the interface is waiting for. One counter for every
+    /// account, because the interface has one search box. Set here, where it
+    /// can be set while a worker is busy, and read by the search itself.
+    search_generation: Arc<AtomicU64>,
 }
 
 impl Supervisor {
@@ -390,6 +406,21 @@ impl Supervisor {
                     self.dispatch(account, Command::FetchBody { account, mailbox, uid, served });
                 }
 
+                // Recorded here rather than in the worker, which is busy:
+                // that is the whole point. A search already running compares
+                // itself against this and gives up when it no longer matches.
+                Command::Search { account, generation, .. } => {
+                    self.search_generation.store(generation, Ordering::Relaxed);
+                    self.dispatch(account, command);
+                }
+
+                // Nothing to dispatch: withdrawing the question is the whole
+                // of the work, and the search that was answering it is inside
+                // the worker already.
+                Command::CancelSearch { generation, .. } => {
+                    self.search_generation.store(generation, Ordering::Relaxed);
+                }
+
                 Command::SignIn(account) => {
                     self.sign_in(account);
                 }
@@ -431,6 +462,7 @@ impl Supervisor {
         let (tx, rx) = mpsc::unbounded_channel();
         let worker = AccountWorker {
             account,
+            search_generation: self.search_generation.clone(),
             config: self.config.clone(),
             store: self.store.clone(),
             events: self.events.clone(),
@@ -493,7 +525,8 @@ impl Command {
             | Command::SetFlag { account, .. }
             | Command::Move { account, .. }
             | Command::Delete { account, .. }
-            | Command::Search { account, .. } => *account,
+            | Command::Search { account, .. }
+            | Command::CancelSearch { account, .. } => *account,
             Command::Send { draft } => draft.account,
             Command::Shutdown => return None,
         })
@@ -502,6 +535,10 @@ impl Command {
 
 struct AccountWorker {
     account: AccountId,
+    /// The search the interface is waiting for, written by the supervisor.
+    /// A running search reads it to find out whether it is still the answer
+    /// anyone wants.
+    search_generation: Arc<AtomicU64>,
     config: Arc<RwLock<Config>>,
     store: Arc<Store>,
     events: EventSink,
@@ -694,7 +731,10 @@ impl AccountWorker {
                 self.send(draft).await?;
             }
             // Handled by the supervisor, never routed to a worker.
-            Command::SignIn(_) | Command::SignOut(_) | Command::Shutdown => {}
+            Command::CancelSearch { .. }
+            | Command::SignIn(_)
+            | Command::SignOut(_)
+            | Command::Shutdown => {}
         }
         Ok(())
     }
@@ -1199,6 +1239,9 @@ impl AccountWorker {
         let mut searched = 0usize;
 
         for target in &targets {
+            if self.search_superseded(generation) {
+                return Ok(());
+            }
             self.events.status(
                 account,
                 format!("Searching {target} ({}/{})", searched + 1, targets.len()),
@@ -1222,13 +1265,32 @@ impl AccountWorker {
             // Bound per mailbox as well as overall; a bare term can match
             // tens of thousands in a single folder.
             let uids: Vec<u32> = uids.into_iter().take(SEARCH_LIMIT).collect();
-            let envelopes = connection.fetch_envelopes(&imap::uid_set(&uids)).await?;
-            self.store.save_envelopes(account, target, &envelopes)?;
-            results.extend(envelopes);
+
+            // Fetched in batches rather than in one call, so that giving up
+            // is answered somewhere other than the end. The search that
+            // matters most here is the whole-account one on Gmail, and that
+            // visits exactly one mailbox: checking between mailboxes would
+            // never once get to look.
+            for batch in uids.chunks(SEARCH_BATCH) {
+                if self.search_superseded(generation) {
+                    return Ok(());
+                }
+                let connection = self.connection.as_mut().expect("connected above");
+                let envelopes = connection.fetch_envelopes(&imap::uid_set(batch)).await?;
+                // Kept even though the results are not sent: the envelopes
+                // are as good in the cache as any other, and the work is
+                // already done.
+                self.store.save_envelopes(account, target, &envelopes)?;
+                results.extend(envelopes);
+            }
 
             if results.len() >= SEARCH_LIMIT {
                 break;
             }
+        }
+
+        if self.search_superseded(generation) {
+            return Ok(());
         }
 
         results.sort_by(|a, b| b.date.cmp(&a.date).then_with(|| b.uid.cmp(&a.uid)));
@@ -1241,6 +1303,23 @@ impl AccountWorker {
             generation,
         });
         Ok(())
+    }
+
+    /// Whether the search being run has been given up on: replaced by a
+    /// newer one, or cleared. Checked rather than signalled, because the
+    /// worker is inside this command and cannot take another.
+    fn search_superseded(&self, generation: u64) -> bool {
+        let current = self.search_generation.load(Ordering::Relaxed);
+        if current != generation {
+            tracing::debug!(
+                account = self.account,
+                generation,
+                current,
+                "abandoning a superseded search"
+            );
+            return true;
+        }
+        false
     }
 
     /// The mailboxes a search should cover, in the order to visit them.
@@ -1444,6 +1523,41 @@ pub fn save_password(account: AccountId, password: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn worker(search_generation: Arc<AtomicU64>) -> AccountWorker {
+        let (event_tx, _event_rx) = mpsc::unbounded_channel();
+        let (command_tx, _command_rx) = mpsc::unbounded_channel();
+        AccountWorker {
+            account: 1,
+            search_generation,
+            config: Arc::new(RwLock::new(Config::default())),
+            store: Arc::new(Store::open_memory().unwrap()),
+            events: EventSink { tx: event_tx, repaint: Arc::new(|| {}) },
+            tokens: Arc::new(TokenStore::new()),
+            connection: None,
+            supervisor: command_tx,
+            idle_cancel: Arc::new(Notify::new()),
+            idle_running: false,
+            prefetch: VecDeque::new(),
+        }
+    }
+
+    /// A search reads the counter the supervisor writes, so it can be told to
+    /// stop while it is running — which is the only time it could be, the
+    /// worker being inside the command for the whole of it.
+    #[test]
+    fn a_running_search_notices_that_it_has_been_superseded() {
+        let generation = Arc::new(AtomicU64::new(7));
+        let worker = worker(generation.clone());
+
+        assert!(!worker.search_superseded(7), "the search running is the one wanted");
+
+        // A second search, or a cleared box: either way the supervisor moves
+        // the counter on while this one is still going.
+        generation.store(8, Ordering::Relaxed);
+        assert!(worker.search_superseded(7), "the search carried on answering a withdrawn query");
+        assert!(!worker.search_superseded(8), "the search that replaced it stopped as well");
+    }
 
     #[test]
     fn the_prefetch_queue_keeps_the_newest_requests() {
