@@ -1305,7 +1305,21 @@ impl eframe::App for RemailApp {
         // reading panes share the card colour, so they read as one sheet of
         // paper split by the panel's separator line.
         let palette = &self.theme.palette;
-        let folders_fill = palette.depth_tint(palette.bg, 0.025);
+        // The folder pane can be given its own polarity. Everything it draws
+        // is taken from the theme it is handed, so this is the whole of the
+        // switch — bar the few text colours it reads off the style instead,
+        // which are overridden on its own `Ui` below.
+        let folders_theme = self
+            .config
+            .read()
+            .unwrap()
+            .ui
+            .dark_folders
+            .then(|| crate::config::dark_pane(&self.theme))
+            .flatten()
+            .unwrap_or_else(|| self.theme.clone());
+        let folders_palette = &folders_theme.palette;
+        let folders_fill = folders_palette.depth_tint(folders_palette.bg, 0.025);
         let messages_fill = palette.card;
         let reading_fill = palette.card;
         let surface =
@@ -1356,6 +1370,14 @@ impl eframe::App for RemailApp {
             .size_range(56.0..=460.0)
             .frame(surface(folders_fill, 2))
             .show(ui, |ui| {
+                // The three the sidebar takes from the style rather than
+                // from the theme it was handed. Set on this pane's own `Ui`,
+                // so nothing outside it changes.
+                let visuals = ui.visuals_mut();
+                visuals.override_text_color = Some(folders_palette.text);
+                visuals.weak_text_color = Some(folders_palette.text_muted);
+                visuals.widgets.active.fg_stroke.color = folders_palette.text;
+
                 let config = self.config.read().unwrap().clone();
                 let selected = self
                     .open_mailbox
@@ -1368,7 +1390,7 @@ impl eframe::App for RemailApp {
                         accounts: &mut self.accounts,
                         selected,
                         font: folders_font.clone(),
-                        theme: &self.theme,
+                        theme: &folders_theme,
                         spring: &mut self.spring,
                     },
                 );

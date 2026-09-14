@@ -79,6 +79,29 @@ impl ThemeChoice {
     }
 }
 
+/// A dark palette for the folder pane, keeping the rest of the theme's
+/// character.
+///
+/// Built from the theme in use rather than substituted for it: the accent is
+/// the one the rest of the window selects with, so a chosen folder and a
+/// chosen message are recognisably the same gesture. Only the ground and the
+/// ink change sides.
+///
+/// Returns `None` when the theme is already dark, where the pane has nothing
+/// to be set apart from.
+pub fn dark_pane(theme: &elegance::Theme) -> Option<elegance::Theme> {
+    if theme.palette.is_dark {
+        return None;
+    }
+
+    let mut dark = elegance::Theme::slate();
+    let accent = &theme.palette;
+    dark.palette.blue = accent.blue;
+    dark.palette.blue_hover = accent.blue_hover;
+    dark.palette.focus = accent.blue;
+    Some(dark)
+}
+
 /// Surfaces sampled from Outlook's light theme.
 ///
 /// The structure matters more than the exact values: grey chrome carrying the
@@ -365,6 +388,14 @@ pub struct UiSettings {
     pub messages: PaneStyle,
     pub reading: PaneStyle,
     pub compact_list: bool,
+    /// Draw the folder pane dark while the rest of the window stays light.
+    ///
+    /// A light theme with a dark rail down the side is a shape people know
+    /// from elsewhere, and it does what a separator cannot: the folder list
+    /// stops competing with the mail for attention. Ignored on a theme that
+    /// is dark already, where there is nothing to set apart.
+    #[serde(default)]
+    pub dark_folders: bool,
     /// Width of the folder pane, in points. Restored on startup.
     pub folders_width: f32,
     /// Width of the message list pane, in points.
@@ -388,6 +419,7 @@ impl Default for UiSettings {
             messages: PaneStyle::default(),
             reading: PaneStyle::default(),
             compact_list: false,
+            dark_folders: false,
             folders_width: 200.0,
             messages_width: 380.0,
             mark_read_after_secs: 1.5,
@@ -463,6 +495,40 @@ pub fn data_dir() -> Result<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    /// The pane changes sides, not character: a folder chosen there and a
+    /// message chosen in the list have to read as the same gesture.
+    #[test]
+    fn a_dark_pane_keeps_the_theme_it_came_from_selecting() {
+        let outlook = ThemeChoice::Outlook.theme();
+        let dark = dark_pane(&outlook).expect("a light theme has a dark pane");
+
+        assert!(dark.palette.is_dark, "the dark pane is not dark");
+        assert_eq!(dark.palette.blue, outlook.palette.blue, "the accent changed with the ground");
+        assert_eq!(dark.palette.focus, outlook.palette.blue);
+        assert_ne!(dark.palette.bg, outlook.palette.bg, "the ground did not change");
+    }
+
+    /// Nothing to set apart, so nothing to do. The switch is disabled in the
+    /// settings for the same reason.
+    #[test]
+    fn a_theme_that_is_already_dark_has_no_dark_pane() {
+        for choice in [ThemeChoice::Slate, ThemeChoice::Charcoal] {
+            let theme = choice.theme();
+            assert!(theme.palette.is_dark, "{:?} was expected to be dark", choice);
+            assert!(dark_pane(&theme).is_none(), "{:?} was given a second dark pane", choice);
+        }
+        for choice in [ThemeChoice::Frost, ThemeChoice::Paper, ThemeChoice::Outlook] {
+            assert!(dark_pane(&choice.theme()).is_some(), "{:?} was refused one", choice);
+        }
+    }
+
+    /// The option is new, so every configuration on disk is missing it.
+    #[test]
+    fn a_configuration_without_the_option_still_loads() {
+        let ui: UiSettings = toml::from_str("theme = \"outlook\"").expect("loads");
+        assert!(!ui.dark_folders, "an absent option came back set");
+    }
+
     use super::*;
 
     fn account(email: &str, label: &str) -> AccountConfig {

@@ -819,7 +819,7 @@ mod render_tests {
     /// Writes a picture of the folder rows, for looking at spacing and
     /// alignment without launching the application.
     ///
-    ///     REMAIL_RENDER=/tmp/rows.png REMAIL_SIZE=15.6 \
+    ///     REMAIL_RENDER=/tmp/rows.png REMAIL_SIZE=15.6 [REMAIL_DARK=1] \
     ///         cargo test render_sidebar_rows -- --ignored
     #[test]
     #[ignore = "writes a file; run it when you want to look at something"]
@@ -827,7 +827,13 @@ mod render_tests {
         let out = std::env::var("REMAIL_RENDER").unwrap_or_else(|_| "/tmp/rows.png".into());
         let size: f32 =
             std::env::var("REMAIL_SIZE").ok().and_then(|v| v.parse().ok()).unwrap_or(14.0);
+        // REMAIL_DARK=1 draws the pane as the dark-folders option does, for
+        // looking at the two side by side.
         let theme = crate::config::ThemeChoice::Outlook.theme();
+        let theme = match std::env::var("REMAIL_DARK").is_ok() {
+            true => crate::config::dark_pane(&theme).expect("a light theme has a dark pane"),
+            false => theme,
+        };
         let painted = theme.clone();
         let font = FontId::new(size, egui::FontFamily::Proportional);
         let row_height = row_height(size);

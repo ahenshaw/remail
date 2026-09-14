@@ -466,6 +466,12 @@ pub fn settings(
 
             ui.add(elegance::Slider::new(&mut config.ui.font_size, 11.0..=20.0).label("Text size"));
             ui.add(Switch::new(&mut config.ui.compact_list, "Compact message list"));
+            let dark_already = config.ui.theme.theme().palette.is_dark;
+            ui.add_enabled(
+                !dark_already,
+                Switch::new(&mut config.ui.dark_folders, "Dark folder pane"),
+            )
+            .on_disabled_hover_text("This theme is already dark");
 
             ui.add_space(10.0);
             ui.label(theme.heading_text("Panes"));
@@ -862,6 +868,7 @@ fn settings_equal(a: &crate::config::UiSettings, b: &crate::config::UiSettings) 
         && a.poll_interval_secs == b.poll_interval_secs
         && a.initial_sync_count == b.initial_sync_count
         && a.compact_list == b.compact_list
+        && a.dark_folders == b.dark_folders
         && (a.font_size - b.font_size).abs() < f32::EPSILON
         && (a.mark_read_after_secs - b.mark_read_after_secs).abs() < f32::EPSILON
         && a.folders == b.folders
