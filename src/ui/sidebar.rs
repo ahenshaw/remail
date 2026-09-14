@@ -277,6 +277,32 @@ enum AccountOutcome {
     NewFolder,
 }
 
+/// Padding around the unread count inside its pill.
+const BADGE_PADDING: Vec2 = Vec2::new(6.0, 1.0);
+
+/// The pill around an unread count, given the size of the number in it.
+///
+/// Round on a single digit, a lozenge on more: never narrower than it is
+/// tall, so a count never reads as a stripe.
+fn badge_size(text: Vec2) -> Vec2 {
+    let height = text.y + BADGE_PADDING.y * 2.0;
+    Vec2::new((text.x + BADGE_PADDING.x * 2.0).max(height), height)
+}
+
+/// A colour to write on top of `accent`.
+///
+/// The unread count used to be bare text in the accent, which had contrast
+/// to spare on a pale pane and lost it on a dark one, where the accent sits
+/// near the ground. Filled, it carries its own contrast and reads the same
+/// either way — but then the number has to be legible against the fill
+/// rather than against the pane, and that depends on the accent rather than
+/// on the theme's polarity.
+fn on_accent(accent: Color32) -> Color32 {
+    let luminance =
+        0.2126 * accent.r() as f32 + 0.7152 * accent.g() as f32 + 0.0722 * accent.b() as f32;
+    if luminance > 140.0 { Color32::from_gray(16) } else { Color32::from_gray(250) }
+}
+
 /// Height of one folder row.
 ///
 /// Sized from the text, so tightening the font tightens the list. The ratio
@@ -474,12 +500,21 @@ fn mailbox_row(ui: &mut Ui, input: RowInput<'_>) -> RowResult {
     let icon_size = font.size * 0.96;
     let text_left = icon_left + icon_size + font.size * 0.38;
 
-    let mut right = rect.right() - 4.0;
+    // Clear of the selection fill, which is itself inset by two and rounded:
+    // at four the badge's curve and the row's very nearly touched.
+    let mut right = rect.right() - 8.0;
     let badge_font = FontId::new(font.size * 0.82, font.family.clone());
-    let badge = unread
-        .then(|| painter.layout_no_wrap(mailbox.unseen.to_string(), badge_font.clone(), accent));
-    if let Some(badge) = &badge {
-        right -= badge.size().x + 6.0;
+    let badge = unread.then(|| {
+        let galley = painter.layout_no_wrap(
+            mailbox.unseen.to_string(),
+            badge_font.clone(),
+            on_accent(accent),
+        );
+        let size = badge_size(galley.size());
+        (galley, size)
+    });
+    if let Some((_, size)) = &badge {
+        right -= size.x + 6.0;
     }
 
     let metrics = TextMetrics::measure(painter, &text_font);
@@ -513,12 +548,16 @@ fn mailbox_row(ui: &mut Ui, input: RowInput<'_>) -> RowResult {
         );
     }
 
-    if let Some(badge) = badge {
-        // Smaller text, so its line box differs: line the two baselines up
-        // rather than their tops, which would leave the count riding high.
-        let badge_metrics = TextMetrics::measure(painter, &badge_font);
-        let badge_top = top + metrics.baseline - badge_metrics.baseline;
-        painter.galley(pos2(right + 6.0, badge_top), badge, accent);
+    if let Some((galley, size)) = badge {
+        // Centred on the capitals of the name beside it, which is where the
+        // eye reads the middle of the line — not the middle of the line box,
+        // which sits lower.
+        let pill = Rect::from_center_size(
+            pos2(right + 6.0 + size.x * 0.5, metrics.caps_centre(top)),
+            size,
+        );
+        painter.rect_filled(pill, size.y * 0.5, accent);
+        painter.galley(pill.center() - galley.size() * 0.5, galley, on_accent(accent));
     }
 
     // A click on the arrow folds the subtree; anywhere else opens the folder.
@@ -677,6 +716,48 @@ mod tests {
     /// pressed the letters against the top of the row.
     fn candara_15_6() -> TextMetrics {
         TextMetrics { baseline: 13.5, cap_height: 10.0 }
+    }
+
+    /// However short the count, the pill keeps its shape. The padding is
+    /// generous enough that a digit already clears this on its own; the floor
+    /// is there for the narrow glyph that does not.
+    #[test]
+    fn the_unread_pill_is_never_narrower_than_it_is_tall() {
+        for width in [0.0_f32, 1.0, 3.0, 6.0, 28.0, 120.0] {
+            let size = badge_size(Vec2::new(width, 14.0));
+            assert!(size.x >= size.y, "a count {width} wide came out as a stripe: {size:?}");
+        }
+
+        // Counts of every length line up with each other and with the text
+        // beside them.
+        let heights: Vec<f32> =
+            [6.0, 14.0, 28.0].iter().map(|w| badge_size(Vec2::new(*w, 14.0)).y).collect();
+        assert!(heights.windows(2).all(|pair| pair[0] == pair[1]), "{heights:?}");
+
+        // And a longer count is a longer pill, not a squeezed one.
+        assert!(badge_size(Vec2::new(28.0, 14.0)).x > badge_size(Vec2::new(6.0, 14.0)).x);
+    }
+
+    /// The number is read against the fill, not against the pane, so what it
+    /// needs depends on the accent rather than on the theme's polarity.
+    #[test]
+    fn the_unread_count_contrasts_with_whatever_it_is_filled_with() {
+        let luminance =
+            |c: Color32| 0.2126 * c.r() as f32 + 0.7152 * c.g() as f32 + 0.0722 * c.b() as f32;
+
+        for accent in [
+            Color32::from_rgb(0x0f, 0x6c, 0xbd), // Outlook's blue
+            Color32::from_rgb(0xff, 0xd7, 0x00), // something bright
+            Color32::from_gray(0),
+            Color32::from_gray(255),
+        ] {
+            let ink = on_accent(accent);
+            let difference = (luminance(ink) - luminance(accent)).abs();
+            assert!(
+                difference > 80.0,
+                "{accent:?} and {ink:?} are only {difference:.0} apart in brightness"
+            );
+        }
     }
 
     /// Every font has to put the capitals in the middle of the row, not just
@@ -839,13 +920,14 @@ mod render_tests {
         let row_height = row_height(size);
         println!("size {size}, row_height {row_height}");
 
-        let names: [(&str, SpecialUse); 6] = [
-            ("Inbox", SpecialUse::Inbox),
-            ("Reports", SpecialUse::Normal),
-            ("Work", SpecialUse::Normal),
-            ("Trash", SpecialUse::Trash),
-            ("Drafts", SpecialUse::Drafts),
-            ("Engineering", SpecialUse::Normal),
+        // A count of each shape: none, one digit, two, three.
+        let names: [(&str, SpecialUse, u32); 6] = [
+            ("Inbox", SpecialUse::Inbox, 7),
+            ("Reports", SpecialUse::Normal, 0),
+            ("Work", SpecialUse::Normal, 42),
+            ("Trash", SpecialUse::Trash, 0),
+            ("Drafts", SpecialUse::Drafts, 128),
+            ("Engineering", SpecialUse::Normal, 0),
         ];
 
         crate::ui::raster::render(
@@ -859,13 +941,13 @@ mod render_tests {
                     ui.spacing_mut().item_spacing.y = 1.0;
                     let first_top = ui.min_rect().top();
                     let mut centres = Vec::new();
-                    for (index, (name, special)) in names.iter().enumerate() {
+                    for (index, (name, special, unseen)) in names.iter().enumerate() {
                         let mailbox = MailboxInfo {
                             name: (*name).to_string(),
                             delimiter: Some("/".into()),
                             special: *special,
                             selectable: true,
-                            unseen: 0,
+                            unseen: *unseen,
                         };
                         mailbox_row(
                             ui,
