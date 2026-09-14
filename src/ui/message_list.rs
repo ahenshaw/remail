@@ -460,18 +460,28 @@ fn draw_row(
     );
 
     if input.compact {
-        // One line: sender, then subject sharing the row. There is no preview
-        // line to hang a folder chip from, so the folder is appended to the
-        // subject instead.
+        // One line: sender, then subject sharing the row. The folder chip
+        // ends that run, before the marker and the clock, in width taken out
+        // of the subject rather than out of nothing.
         let subject_left = text_left + first_line_width * COMPACT_SENDER_SHARE;
+        let chip = input
+            .show_folder
+            .then(|| FolderChip::new(painter, envelope.folder_label(), font(size * 0.72), palette))
+            .flatten();
+        let reserved = clip_width + FolderChip::reserved(&chip);
+
         let _ = paint_truncated(
             painter,
             pos2(subject_left, rect.top() + metrics.subject_y),
-            compact_subject_width(right, subject_left, date_width, clip_width),
-            &compact_subject(envelope, input.show_folder),
+            compact_subject_width(right, subject_left, date_width, reserved),
+            display_subject(envelope),
             font(size * 0.95),
             subject_color,
         );
+        if let Some(chip) = chip {
+            let x = right - date_width - clip_width - chip.size.x;
+            chip.paint(painter, pos2(x, rect.top() + metrics.subject_y - 1.5), palette);
+        }
     } else {
         let _ = paint_truncated(
             painter,
@@ -483,21 +493,14 @@ fn draw_row(
         );
 
         let mut preview_left = text_left;
-        let folder = envelope.folder_label();
-        if input.show_folder && !folder.is_empty() {
-            // A filled chip rather than tinted text: this is the answer to
-            // "where did this come from", so it should not read as part of
-            // the preview line running alongside it.
-            let galley =
-                painter.layout_no_wrap(folder.to_string(), font(size * 0.72), palette.blue);
-            let padding = Vec2::new(5.0, 1.5);
-            let chip = Rect::from_min_size(
-                pos2(preview_left, rect.top() + metrics.preview_y - 1.5),
-                galley.size() + padding * 2.0,
-            );
-            painter.rect_filled(chip, 3.0, super::accent_tint(palette, 0.86));
-            painter.galley(chip.min + padding, galley, palette.blue);
-            preview_left = chip.right() + 7.0;
+        if let Some(chip) = input
+            .show_folder
+            .then(|| FolderChip::new(painter, envelope.folder_label(), font(size * 0.72), palette))
+            .flatten()
+        {
+            let width = chip.size.x;
+            chip.paint(painter, pos2(preview_left, rect.top() + metrics.preview_y - 1.5), palette);
+            preview_left += width + FolderChip::GAP;
         }
 
         if !envelope.preview.is_empty() {
@@ -554,6 +557,51 @@ fn draw_row(
             font(super::icons::size_beside_text(size) * 0.82),
             weak,
         );
+    }
+}
+
+/// The pill naming the folder a message lives in, for a listing that spans
+/// more than one.
+///
+/// A filled chip rather than tinted text: this is the answer to "where did
+/// this come from", so it should not read as part of the line running
+/// alongside it. Laid out before the text it sits next to, because both
+/// densities have to take its width out of that text rather than let it be
+/// drawn over — or, as the compact row did, append it to a string that is
+/// then ellipsized and lose it on every subject long enough to matter.
+struct FolderChip {
+    galley: std::sync::Arc<egui::Galley>,
+    size: Vec2,
+}
+
+impl FolderChip {
+    const PADDING: Vec2 = Vec2::new(5.0, 1.5);
+    /// Space between the chip and whatever text it sits beside.
+    const GAP: f32 = 7.0;
+
+    fn new(
+        painter: &egui::Painter,
+        folder: &str,
+        font: FontId,
+        palette: &elegance::Palette,
+    ) -> Option<Self> {
+        if folder.is_empty() {
+            return None;
+        }
+        let galley = painter.layout_no_wrap(folder.to_string(), font, palette.blue);
+        let size = galley.size() + Self::PADDING * 2.0;
+        Some(Self { galley, size })
+    }
+
+    /// What the chip costs the text beside it: itself, and a gap.
+    fn reserved(chip: &Option<Self>) -> f32 {
+        chip.as_ref().map_or(0.0, |chip| chip.size.x + Self::GAP)
+    }
+
+    fn paint(self, painter: &egui::Painter, min: egui::Pos2, palette: &elegance::Palette) {
+        let chip = Rect::from_min_size(min, self.size);
+        painter.rect_filled(chip, 3.0, super::accent_tint(palette, 0.86));
+        painter.galley(chip.min + Self::PADDING, self.galley, palette.blue);
     }
 }
 
@@ -641,17 +689,6 @@ fn recipients(envelope: &Envelope) -> String {
     }
 }
 
-/// Subject for a compact row, with the folder appended while searching.
-fn compact_subject(envelope: &Envelope, show_folder: bool) -> String {
-    let subject = display_subject(envelope);
-    let folder = envelope.folder_label();
-    if show_folder && !folder.is_empty() {
-        format!("{subject}  \u{2014} {folder}")
-    } else {
-        subject.to_string()
-    }
-}
-
 fn display_subject(envelope: &Envelope) -> &str {
     if envelope.subject.trim().is_empty() { "(no subject)" } else { &envelope.subject }
 }
@@ -723,6 +760,33 @@ mod tests {
                 assert!(star.left() >= text_ends, "{what}: the star reaches into the text column");
             }
         }
+    }
+
+    /// The folder chip is laid out before the subject and its width taken
+    /// out of it. Appended to the subject instead, as it was, it went through
+    /// the same ellipsis and vanished on every subject long enough to need
+    /// one — which on a compact row is most of them.
+    #[test]
+    fn the_folder_chip_is_paid_for_out_of_the_compact_subject() {
+        let theme = crate::config::ThemeChoice::Outlook.theme();
+        let (reserved, none) = crate::ui::raster::measure(&theme, Vec2::new(400.0, 80.0), |ui| {
+            let font = FontId::new(12.0, egui::FontFamily::Proportional);
+            let chip = FolderChip::new(ui.painter(), "All Mail", font.clone(), &theme.palette);
+            let empty = FolderChip::new(ui.painter(), "", font, &theme.palette);
+            (FolderChip::reserved(&chip), FolderChip::reserved(&empty))
+        });
+
+        assert!(reserved > 0.0, "a chip that costs nothing was never laid out");
+        assert_eq!(none, 0.0, "a row with no folder to name still paid for one");
+
+        let full = compact_subject_width(400.0, 60.0, 70.0, 0.0);
+        let beside_chip = compact_subject_width(400.0, 60.0, 70.0, reserved);
+        assert!(beside_chip < full, "the subject kept its width beside the chip");
+        assert!(
+            (full - beside_chip - reserved).abs() < 0.01,
+            "the subject gave up {:.1}pt for a chip that needs {reserved:.1}",
+            full - beside_chip
+        );
     }
 
     /// Whatever shares a line with the attachment marker has to be given
