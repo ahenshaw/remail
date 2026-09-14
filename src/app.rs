@@ -677,7 +677,7 @@ impl RemailApp {
         });
         self.textures.clear();
         self.remote_images.clear();
-        self.engine.send(Command::FetchBody { account, mailbox, uid });
+        self.engine.send(Command::FetchBody { account, mailbox, uid, served: false });
     }
 
     fn select_range_to(&mut self, key: &RowKey) {

@@ -228,3 +228,42 @@ mod tests {
         assert!(!prepared.document.is_empty());
     }
 }
+
+#[cfg(test)]
+mod timing {
+    use std::time::Instant;
+
+    #[test]
+    fn time_the_pipeline() {
+        let Ok(path) = std::env::var("REMAIL_EML") else { return };
+        let raw = std::fs::read(&path).unwrap();
+
+        let t = Instant::now();
+        let body = crate::mail::parse::parse_body(&raw);
+        let parse = t.elapsed();
+
+        let html = body.html.as_deref().unwrap_or("");
+        println!("  raw {} KB, html {} KB", raw.len() / 1024, html.len() / 1024);
+        println!("  parse_body          {parse:>10.2?}");
+
+        let t = Instant::now();
+        let cleaned = super::sanitize::sanitize(html, false);
+        let san = t.elapsed();
+        println!("  sanitize            {san:>10.2?}   -> {} KB", cleaned.html.len() / 1024);
+
+        let t = Instant::now();
+        let dom = super::dom::parse(&cleaned.html);
+        let domt = t.elapsed();
+        println!("  dom::parse          {domt:>10.2?}");
+
+        let t = Instant::now();
+        let doc = super::layout::lower(&dom);
+        let lower = t.elapsed();
+        println!("  layout::lower       {lower:>10.2?}   -> {} blocks", doc.blocks.len());
+
+        let t = Instant::now();
+        let _ = super::Prepared::from_parts(body.html.as_deref(), body.text.as_deref(), false);
+        println!("  from_parts (all)    {:>10.2?}", t.elapsed());
+        println!("  --- total {:>10.2?}", parse + san + domt + lower);
+    }
+}

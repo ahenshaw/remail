@@ -87,6 +87,11 @@ pub enum Command {
         account: AccountId,
         mailbox: String,
         uid: u32,
+        /// Set by the supervisor when it has already answered from the cache.
+        /// The worker then only refreshes the stored preview, rather than
+        /// sending the body a second time and making the reader lay it out
+        /// again for no change.
+        served: bool,
     },
     /// Warm the cache for messages the user is likely to open next.
     Prefetch {
@@ -347,6 +352,37 @@ impl Supervisor {
                     self.dispatch(account, command);
                 }
 
+                // The same, for a body that is already cached. The account
+                // worker takes its commands one at a time, and one of them is
+                // a prefetch run that may be part way through fetching a
+                // screenful of messages off the server. A body request queued
+                // behind that waited out every one of them, even though the
+                // message asked for was sitting in the cache: the reading pane
+                // stayed empty for as long as the fetching took, rather than
+                // for the millisecond the parse costs.
+                Command::FetchBody { account, mailbox, uid, .. } => {
+                    let cached = match self.store.load_raw(account, &mailbox, uid) {
+                        Ok(cached) => cached,
+                        Err(e) => {
+                            self.events.error(account, &e);
+                            None
+                        }
+                    };
+                    let served = cached.is_some();
+                    if let Some(raw) = cached {
+                        self.events.emit(Event::Body {
+                            account,
+                            mailbox: mailbox.clone(),
+                            uid,
+                            body: Arc::new(parse::parse_body(&raw)),
+                        });
+                    }
+                    // Dispatched either way: with the body served the worker
+                    // only refreshes the stored preview, and without it there
+                    // is a message to go and get.
+                    self.dispatch(account, Command::FetchBody { account, mailbox, uid, served });
+                }
+
                 Command::SignIn(account) => {
                     self.sign_in(account);
                 }
@@ -548,8 +584,8 @@ impl AccountWorker {
                 self.sync(&mailbox).await?;
                 self.ensure_idle(&mailbox).await;
             }
-            Command::FetchBody { mailbox, uid, .. } => {
-                self.load_body(&mailbox, uid, true).await?;
+            Command::FetchBody { mailbox, uid, served, .. } => {
+                self.load_body(&mailbox, uid, !served).await?;
             }
             Command::Prefetch { mailbox, uids, .. } => {
                 for uid in uids {
@@ -1337,6 +1373,50 @@ pub fn save_password(account: AccountId, password: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A cached body is answered by the supervisor, so it does not queue
+    /// behind whatever the account worker is part way through.
+    ///
+    /// What is checkable from out here is that it is answered *once*. The
+    /// worker is still sent the command, because it refreshes the stored
+    /// preview, and it would otherwise read the same cache and announce the
+    /// same body a second time — making the reader lay out the message twice
+    /// for no change. That the first answer is also the faster one is a
+    /// property of a busy worker, which a test with no account cannot make
+    /// busy; it is the reason for the arrangement rather than a claim this
+    /// proves.
+    #[test]
+    fn a_cached_body_is_announced_once() {
+        let store = Arc::new(Store::open_memory().unwrap());
+        let raw = b"From: Lance <lance@example.net>\r\n\
+                    Subject: Re: The Harbor Point Interactive Map\r\n\
+                    \r\n\
+                    The map is up to date now.\r\n";
+        store.save_raw(1, "INBOX", 41349, raw).unwrap();
+
+        let config = Arc::new(RwLock::new(Config::default()));
+        let mut engine = Engine::start(config, store, || {}).unwrap();
+        engine.send(Command::FetchBody {
+            account: 1,
+            mailbox: "INBOX".into(),
+            uid: 41349,
+            served: false,
+        });
+
+        // Long enough for the worker to have had its turn as well.
+        let deadline = std::time::Instant::now() + Duration::from_millis(500);
+        let mut bodies = Vec::new();
+        while std::time::Instant::now() < deadline {
+            bodies.extend(engine.poll().into_iter().filter_map(|event| match event {
+                Event::Body { uid: 41349, body, .. } => Some(body),
+                _ => None,
+            }));
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        assert_eq!(bodies.len(), 1, "the body was announced {} times", bodies.len());
+        assert!(bodies[0].text.as_deref().unwrap_or_default().contains("up to date"));
+    }
 
     fn mailbox(name: &str, special: SpecialUse) -> MailboxInfo {
         MailboxInfo {
