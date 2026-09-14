@@ -211,23 +211,29 @@ fn header(
             *action = Some(Action::Delete);
         }
 
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let label = if *show_source { "Rendered" } else { "Source" };
-            if ui.add(Button::new(label).size(ButtonSize::Small).outline()).clicked() {
-                *show_source = !*show_source;
-            }
-            if ui
-                .add(
-                    Button::new(format!("{} Print", super::icons::PRINTER))
-                        .size(ButtonSize::Small)
-                        .outline(),
-                )
-                .on_hover_text("Open this message in your browser to print it")
-                .clicked()
-            {
-                *action = Some(Action::Print);
-            }
-        });
+        // What to do with the message, then what to do with the view of it,
+        // divided by a rule rather than by pushing the second group to the
+        // right. A right-to-left child does not wrap: handed less width than
+        // its buttons need — which a narrow reading pane does — it draws
+        // leftwards from its own right edge, straight over the buttons
+        // already there.
+        ui.separator();
+
+        let label = if *show_source { "Rendered" } else { "Source" };
+        if ui.add(Button::new(label).size(ButtonSize::Small).outline()).clicked() {
+            *show_source = !*show_source;
+        }
+        if ui
+            .add(
+                Button::new(format!("{} Print", super::icons::PRINTER))
+                    .size(ButtonSize::Small)
+                    .outline(),
+            )
+            .on_hover_text("Open this message in your browser to print it")
+            .clicked()
+        {
+            *action = Some(Action::Print);
+        }
     });
     ui.add_space(6.0);
 }
@@ -342,5 +348,88 @@ fn join_addrs(addrs: &[crate::mail::Addr]) -> String {
         format!("{}, +{} more", shown.join(", "), addrs.len() - MAX)
     } else {
         shown.join(", ")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// Why the reader's toolbar does not push its last two buttons to the
+    /// right, which is the obvious way to write it and what it used to do.
+    ///
+    /// A right-to-left child draws from its own right edge leftwards and does
+    /// not wrap. Inside a wrapped row it is handed whatever width is left,
+    /// and when that is less than its buttons need it draws over the ones
+    /// already on the row. A narrow reading pane is exactly that case.
+    ///
+    /// This measures the two arrangements rather than the pane: egui keeps
+    /// laid-out widget rects to itself, so a test cannot ask the real header
+    /// where its buttons went. What it guards is the reasoning — the trap is
+    /// easy to walk back into, and it looks correct at any width where the
+    /// row happens not to be full.
+    #[test]
+    fn a_right_to_left_group_cannot_share_a_wrapped_row() {
+        let theme = crate::config::ThemeChoice::Outlook.theme();
+        let labels = ["Reply", "Reply all", "Forward", "Archive", "Delete"];
+        let trailing = ["Source", "Print"];
+
+        let overlaps = |right_to_left: bool| {
+            let mut widths = Vec::new();
+            for width in (200..=760).step_by(20).map(|w| w as f32) {
+                let rects = crate::ui::raster::measure(&theme, egui::vec2(width, 400.0), |ui| {
+                    let mut rects: Vec<egui::Rect> = Vec::new();
+                    ui.horizontal_wrapped(|ui| {
+                        let button = |ui: &mut egui::Ui, label: &str| {
+                            ui.add(
+                                elegance::Button::new(label)
+                                    .size(elegance::ButtonSize::Small)
+                                    .outline(),
+                            )
+                            .rect
+                        };
+                        for label in labels {
+                            rects.push(button(ui, label));
+                        }
+                        if right_to_left {
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    for label in trailing {
+                                        rects.push(button(ui, label));
+                                    }
+                                },
+                            );
+                        } else {
+                            ui.separator();
+                            for label in trailing {
+                                rects.push(button(ui, label));
+                            }
+                        }
+                    });
+                    rects
+                });
+
+                let clash = rects
+                    .iter()
+                    .enumerate()
+                    .any(|(i, a)| rects.iter().skip(i + 1).any(|b| a.intersects(*b)));
+                if clash {
+                    widths.push(width);
+                }
+            }
+            widths
+        };
+
+        let pushed_right = overlaps(true);
+        assert!(
+            !pushed_right.is_empty(),
+            "the arrangement this is a warning about did not misbehave, so it is no longer \
+             a warning about anything"
+        );
+
+        let in_the_row = overlaps(false);
+        assert!(
+            in_the_row.is_empty(),
+            "the arrangement the reader uses overlapped at {in_the_row:?}"
+        );
     }
 }
