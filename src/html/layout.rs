@@ -123,6 +123,17 @@ struct Builder {
 impl Builder {
     /// Ends the current inline run and emits it as a block.
     fn flush(&mut self) {
+        // A block does not end with the space its markup happened to be
+        // indented with. `<pre>` keeps its whitespace and never comes
+        // through here; it is a block of its own.
+        if let Some(Inline::Text { text, .. }) = self.pending.last_mut() {
+            while text.ends_with(' ') {
+                text.pop();
+            }
+            if text.is_empty() {
+                self.pending.pop();
+            }
+        }
         if self.pending.iter().all(inline_is_blank) {
             self.pending.clear();
             self.list_item = None;
@@ -152,10 +163,29 @@ impl Builder {
     }
 
     fn push_text(&mut self, text: &str, style: Style, link: Option<&str>) {
-        let collapsed = collapse_whitespace(text);
+        let mut collapsed = collapse_whitespace(text);
         if collapsed.is_empty() {
+            // Nothing but whitespace still separates what is either side of
+            // it. `<span>to</span> <span>the</span>` is two words, and the
+            // space between them is a text node of its own — collapsing it
+            // to nothing ran them together, which is most of what a message
+            // pasted out of a word processor is made of.
+            if text.chars().any(is_collapsible_space) {
+                self.push_separator();
+            }
             return;
         }
+
+        // The gap may already be there: from this run's own leading
+        // whitespace, from the trailing whitespace of the run before, and
+        // from a separator between them — all three describe one space.
+        if collapsed.starts_with(' ') && self.ends_with_gap() {
+            collapsed.remove(0);
+            if collapsed.is_empty() {
+                return;
+            }
+        }
+
         // Merge into the previous run when nothing about it changed; this
         // keeps galley counts low on heavily nested marketing HTML.
         if let Some(Inline::Text { text: previous, style: prev_style, link: prev_link }) =
@@ -167,6 +197,38 @@ impl Builder {
             return;
         }
         self.pending.push(Inline::Text { text: collapsed, style, link: link.map(str::to_string) });
+    }
+
+    /// Whether a space is already standing at the end of what has been laid
+    /// out, so another would double it. The start of a block counts: there is
+    /// nothing there for a space to separate from.
+    fn ends_with_gap(&self) -> bool {
+        match self.pending.last() {
+            None | Some(Inline::Break) => true,
+            Some(Inline::Text { text, .. }) => text.ends_with(' '),
+            Some(Inline::Image { .. }) => false,
+        }
+    }
+
+    /// Adds the space a whitespace-only text node stands for.
+    ///
+    /// Nothing at the start of a block, where leading whitespace is not a
+    /// space, and nothing after a break, where it would indent the next
+    /// line. Never two in a row.
+    fn push_separator(&mut self) {
+        if self.ends_with_gap() {
+            return;
+        }
+        match self.pending.last_mut() {
+            None | Some(Inline::Break) => {}
+            Some(Inline::Text { text, .. }) => text.push(' '),
+            // After an image, which cannot hold the space itself.
+            Some(Inline::Image { .. }) => self.pending.push(Inline::Text {
+                text: " ".to_string(),
+                style: Style::default(),
+                link: None,
+            }),
+        }
     }
 
     fn walk_element(&mut self, element: &Element, style: Style, link: Option<&str>) {
@@ -513,6 +575,12 @@ fn text_content(nodes: &[Node]) -> String {
 
 /// Collapses runs of whitespace the way HTML does, keeping non-breaking
 /// spaces intact.
+/// Whitespace that collapses. A non-breaking space is a character, not a
+/// gap: it is there precisely so it will not be collapsed away.
+fn is_collapsible_space(ch: char) -> bool {
+    ch.is_whitespace() && ch != '\u{a0}'
+}
+
 fn collapse_whitespace(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     let mut in_space = false;
@@ -523,7 +591,7 @@ fn collapse_whitespace(input: &str) -> String {
         if is_invisible(ch) {
             continue;
         }
-        if ch.is_whitespace() && ch != '\u{a0}' {
+        if is_collapsible_space(ch) {
             in_space = true;
             continue;
         }
@@ -624,6 +692,84 @@ mod tests {
 
     fn document(html: &str) -> Document {
         lower(&parse(html))
+    }
+
+    /// Everything a block reads as, run together.
+    fn reading(html: &str) -> String {
+        document(html)
+            .blocks
+            .iter()
+            .map(|block| {
+                let inlines = match block {
+                    Block::Paragraph { inlines, .. } | Block::ListItem { inlines, .. } => inlines,
+                    _ => return String::new(),
+                };
+                inlines
+                    .iter()
+                    .map(|inline| match inline {
+                        Inline::Text { text, .. } => text.as_str(),
+                        Inline::Break => "\n",
+                        Inline::Image { .. } => "",
+                    })
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// A space between two elements is a text node of its own, and collapsing
+    /// it to nothing ran the words either side of it together. Mail pasted
+    /// out of a word processor is mostly this shape.
+    #[test]
+    fn a_space_between_elements_is_still_a_space() {
+        assert_eq!(reading("<p><span>to</span> <span>the</span></p>"), "to the");
+        assert_eq!(reading("<p><b>bold</b> <i>italic</i></p>"), "bold italic");
+        assert_eq!(reading("<p>a <a href=\"http://e.com\">link</a> here</p>"), "a link here");
+
+        // The shape that started this: every word in its own element.
+        assert_eq!(
+            reading("<p><span>Welcome</span> <span>to</span> <span>the</span></p>"),
+            "Welcome to the"
+        );
+    }
+
+    /// One space, however the whitespace is divided up.
+    #[test]
+    fn separators_do_not_accumulate() {
+        assert_eq!(reading("<p><span>a</span> <span></span> <span>b</span></p>"), "a b");
+        assert_eq!(reading("<p><span>a</span>   <span>b</span></p>"), "a b");
+        assert_eq!(reading("<p><span>a </span> <span>b</span></p>"), "a b");
+        assert_eq!(reading("<p><span>a</span> <span> b</span></p>"), "a b");
+    }
+
+    /// Whitespace at the edges of a block is not a space: it is the markup
+    /// being indented.
+    #[test]
+    fn a_block_does_not_begin_or_end_with_a_separator() {
+        assert_eq!(reading("<p> <span>a</span></p>"), "a");
+        assert_eq!(reading("<p>\n    <span>a</span>\n</p>"), "a");
+        assert_eq!(reading("<div>\n  <p>a</p>\n  <p>b</p>\n</div>"), "a\nb");
+    }
+
+    /// A break ends the line; a space after it would indent the next one.
+    #[test]
+    fn a_separator_after_a_break_is_dropped() {
+        assert_eq!(reading("<p>a<br> <span>b</span></p>"), "a\nb");
+    }
+
+    /// A non-breaking space is a character, not a gap — it is used precisely
+    /// because it will not be collapsed.
+    #[test]
+    fn a_non_breaking_space_is_not_collapsible() {
+        assert_eq!(reading("<p><span>a</span>\u{a0}<span>b</span></p>"), "a\u{a0}b");
+        assert_eq!(reading("<p>8\u{a0}a.m.</p>"), "8\u{a0}a.m.");
+    }
+
+    /// Invisible formatting characters are not whitespace and do not stand in
+    /// for a space. Marketing mail pads preheaders with hundreds of them.
+    #[test]
+    fn an_invisible_run_does_not_become_a_space() {
+        assert_eq!(reading("<p><span>a</span>\u{200b}\u{200b}<span>b</span></p>"), "ab");
     }
 
     #[test]
