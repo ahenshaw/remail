@@ -96,6 +96,10 @@ pub struct RemailApp {
     search_scope: SearchScope,
     /// Results of a server-side search, replacing the mailbox listing.
     search_results: Option<Vec<Envelope>>,
+    /// A server-side search is in flight. Drives the spinner in the search
+    /// bar and dims the rows the search is about to replace, which until it
+    /// returns are the local filter's answer rather than the one asked for.
+    searching: bool,
 
     open_message: Option<OpenMessage>,
     textures: TextureCache,
@@ -161,6 +165,7 @@ impl RemailApp {
             search: String::new(),
             search_scope: SearchScope::default(),
             search_results: None,
+            searching: false,
             open_message: None,
             textures: TextureCache::new(),
             remote_images,
@@ -252,6 +257,9 @@ impl RemailApp {
             }
 
             Event::Error { account, text } => {
+                // Whatever failed, a search that was in flight is not coming
+                // back; the spinner has to stop whether or not this is why.
+                self.searching = false;
                 self.status = text.clone();
                 if self.accounts.get(&account).is_some_and(|v| v.needs_sign_in) {
                     return;
@@ -415,6 +423,7 @@ impl RemailApp {
                 }
                 let count = envelopes.len();
                 self.search_results = Some(envelopes);
+                self.searching = false;
                 self.status = format!("{count} matching messages");
             }
 
@@ -523,6 +532,7 @@ impl RemailApp {
                         "Searching {} for \u{201c}{query}\u{201d}\u{2026}",
                         scope.label().to_lowercase()
                     );
+                    self.searching = true;
                     self.engine.send(Command::Search {
                         account,
                         mailbox,
@@ -535,6 +545,7 @@ impl RemailApp {
             Action::ClearSearch => {
                 self.search.clear();
                 self.search_results = None;
+                self.searching = false;
             }
 
             Action::LoadRemoteImages => {
@@ -1591,7 +1602,13 @@ impl RemailApp {
             }
         }
 
-        if clearable
+        // The spinner stands in the clear button's place rather than beside
+        // it: the slot's width is reserved either way, so the swap costs no
+        // layout, and this is where the eye already is after pressing Enter.
+        if self.searching {
+            ui.add(elegance::Spinner::new().size(SEARCH_BAR_HEIGHT * 0.6).accent(Accent::Blue))
+                .on_hover_text(&self.status);
+        } else if clearable
             && ui
                 .add(Button::new(glyphs::X.to_string()).size(ButtonSize::Medium).outline())
                 .on_hover_text(if self.search_results.is_some() {
@@ -1619,6 +1636,8 @@ impl RemailApp {
 
         let empty_message = if self.open_mailbox.is_none() {
             "Select a mailbox"
+        } else if self.searching {
+            "Searching\u{2026}"
         } else if self.search_results.is_some() {
             "No messages matched"
         } else if !self.search.trim().is_empty() {
@@ -1668,6 +1687,9 @@ impl RemailApp {
                 font,
                 surface,
                 scroll_to_cursor,
+                // Only what a search is about to replace. A filter narrowing
+                // as it is typed is the answer, not a stand-in for one.
+                stale: self.searching,
                 empty_message,
             },
         );
@@ -2202,11 +2224,21 @@ mod tests {
                         let clear = ui.add(
                             Button::new(glyphs::X.to_string()).size(ButtonSize::Medium).outline(),
                         );
+                        // The spinner stands in the clear button's place
+                        // while a search is out. It is deliberately smaller
+                        // than the controls — it has no frame to match — but
+                        // it sits on their line.
+                        let spinner = ui.add(
+                            elegance::Spinner::new()
+                                .size(SEARCH_BAR_HEIGHT * 0.6)
+                                .accent(Accent::Blue),
+                        );
                         [
                             ("scope", select.rect),
                             ("spam toggle", toggle.rect),
                             ("query box", input.rect),
                             ("clear", clear.rect),
+                            ("spinner", spinner.rect),
                         ]
                     },
                 )
@@ -2216,6 +2248,9 @@ mod tests {
         });
 
         for (name, rect) in rects {
+            if name == "spinner" {
+                continue; // Frameless, so its own size rather than the bar's.
+            }
             assert!(
                 (rect.height() - SEARCH_BAR_HEIGHT).abs() <= 1.5,
                 "{name} is {:.2} tall, the bar is {SEARCH_BAR_HEIGHT}",

@@ -36,6 +36,10 @@ pub struct ListInput<'a> {
     pub surface: Color32,
     /// Scroll so the cursor is visible; set after a keyboard move.
     pub scroll_to_cursor: bool,
+    /// The rows on screen are about to be replaced by a search that has not
+    /// come back yet. Drawn faded, because until it does they are the local
+    /// filter's answer rather than the one that was asked for.
+    pub stale: bool,
     pub empty_message: &'a str,
 }
 
@@ -119,6 +123,12 @@ pub fn show(ui: &mut Ui, input: ListInput<'_>) -> ListOutput {
     scroll.show_rows(ui, row_height, input.envelopes.len(), |ui, range| {
         visible = range.clone();
         ui.set_width(ui.available_width());
+        // Faded as a whole rather than colour by colour: the stripes, the
+        // accents and the markers all have to recede together, or the rows
+        // stop looking like the same rows.
+        if input.stale {
+            ui.multiply_opacity(0.45);
+        }
 
         for index in range {
             let envelope = &input.envelopes[index];
