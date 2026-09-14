@@ -503,18 +503,31 @@ impl RemailApp {
                 // completion and still answers. Its results would otherwise
                 // replace the listing the user is looking at now, minutes
                 // after they stopped asking for them.
-                if generation != self.search_generation || !self.is_open(account, &mailbox) {
+                //
+                // Only the generation decides that. Where the reader happens
+                // to be does not: the results have a folder of their own to
+                // go into, and a search is not withdrawn by reading something
+                // while it runs.
+                if generation != self.search_generation {
                     return;
                 }
+
+                // Whether to go there, though, is exactly that question.
+                // Still where the search was started, or already in the
+                // folder: take them to it, which is what they asked for.
+                // Gone somewhere else in the meantime: leave them, and let
+                // the folder in the sidebar say the results are waiting.
+                let expecting = self.is_open(account, &mailbox) || self.in_search_folder();
+
                 let count = envelopes.len();
                 self.search_results = Some(envelopes);
                 self.search_account = Some(account);
                 self.searching = false;
                 self.status = format!("{count} matching messages");
-                // Opening it now rather than when the search started: until
-                // the results are here there is nothing in it, and the folder
-                // being looked at is a better thing to look at than that.
-                self.open_mailbox(account, crate::mail::model::SEARCH_MAILBOX.to_string());
+
+                if expecting {
+                    self.open_mailbox(account, crate::mail::model::SEARCH_MAILBOX.to_string());
+                }
             }
 
             Event::Sent => {
@@ -2538,6 +2551,43 @@ mod tests {
         // And the folder is still there to go back to.
         app.apply(Action::OpenMailbox { account: 1, mailbox: search_mailbox() });
         assert_eq!(app.visible().len(), 1, "the results did not come back");
+    }
+
+    /// Reading something while a search runs is not withdrawing it. The
+    /// results used to be thrown away for it — the folder they were meant to
+    /// replace was no longer open, so nothing took them.
+    #[test]
+    fn results_are_kept_when_the_reader_has_moved_on() {
+        let mut app = app();
+        app.apply(Action::SearchServer("from:dupr".into()));
+
+        // Off to read something else while it runs.
+        app.apply(Action::OpenMailbox { account: 1, mailbox: "Archery".into() });
+        app.handle_event(results_from("INBOX", app.search_generation));
+
+        assert!(app.search_results.is_some(), "the results were dropped for having moved");
+        assert!(!app.searching, "the search never finished");
+
+        // Left where they chose to be, rather than taken somewhere.
+        assert_eq!(app.open_mailbox, Some((1, "Archery".to_string())), "moved unasked");
+
+        // And the folder is there when they want it.
+        app.apply(Action::OpenMailbox { account: 1, mailbox: search_mailbox() });
+        assert_eq!(app.visible().len(), 1);
+    }
+
+    /// Already in the folder from an earlier search, a new one lands there
+    /// without having to be opened again.
+    #[test]
+    fn a_second_search_lands_in_the_folder_already_open() {
+        let mut app = app();
+        app.apply(Action::SearchServer("from:dupr".into()));
+        app.handle_event(results(app.search_generation));
+        assert_eq!(app.open_mailbox, Some((1, search_mailbox())));
+
+        app.apply(Action::SearchServer("subject:pickleball".into()));
+        app.handle_event(results_from("INBOX", app.search_generation));
+        assert_eq!(app.open_mailbox, Some((1, search_mailbox())), "left the folder it was in");
     }
 
     /// Dismissing them takes the folder away, so it has to put the reader
