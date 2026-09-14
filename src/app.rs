@@ -1722,8 +1722,11 @@ impl RemailApp {
                 self.config.read().unwrap().ui.search_spam_and_trash,
                 self.search_results.is_some(),
             );
-            ui.ctx().copy_text(command.clone());
-            self.status = format!("Copied: {command}");
+            ui.ctx().copy_text(command);
+            // Named rather than quoted: the command is ninety characters of
+            // shell and the status bar is one line beside the message counts.
+            // It is on the clipboard, which is where it was asked for.
+            self.status = "Copied the command for this search".into();
         }
 
         // Escape clears from inside the field. The global shortcut cannot:
@@ -2035,7 +2038,12 @@ impl RemailApp {
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if !self.status.is_empty() {
-                    ui.label(self.theme.muted_text(&self.status));
+                    // Truncated, not left to run: this is a right-aligned
+                    // label on a row that does not wrap, so a status longer
+                    // than the space left would be drawn over the counts.
+                    // The whole of it is on the tooltip.
+                    ui.add(egui::Label::new(self.theme.muted_text(&self.status)).truncate())
+                        .on_hover_text(&self.status);
                 }
             });
         });
