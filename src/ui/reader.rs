@@ -223,16 +223,24 @@ fn header(
         if ui.add(Button::new(label).size(ButtonSize::Small).outline()).clicked() {
             *show_source = !*show_source;
         }
+        // The reader draws a sanitized block model, which is the right
+        // trade for most mail and the wrong one for a message built as a
+        // page. The browser has the whole of CSS; this hands it the same
+        // sanitized document, with the `cid:` parts inlined so it stands on
+        // its own — and with the remote content this message is still
+        // withholding still withheld.
         if ui
             .add(
-                Button::new(format!("{} Print", super::icons::PRINTER))
+                Button::new(format!("{} Browser", super::icons::EXTERNAL))
                     .size(ButtonSize::Small)
                     .outline(),
             )
-            .on_hover_text("Open this message in your browser to print it")
+            .on_hover_text(
+                "Open in your browser, where it renders as sent \u{2014} and where printing lives",
+            )
             .clicked()
         {
-            *action = Some(Action::Print);
+            *action = Some(Action::OpenInBrowser);
         }
     });
     ui.add_space(6.0);

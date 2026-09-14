@@ -61,8 +61,9 @@ pub enum Action {
     OpenUrl(String),
     /// Write an attachment to disk.
     SaveAttachment(usize),
-    /// Hand the open message to the system's print path.
-    Print,
+    /// Open the sanitized message in the system's browser, where it renders
+    /// as the sender built it — and where printing lives.
+    OpenInBrowser,
     /// Discard the current listing's search filter.
     ClearSearch,
     /// Mark every message in a mailbox as read.

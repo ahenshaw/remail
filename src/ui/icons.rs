@@ -23,13 +23,12 @@ pub const STAR_FILLED: &str = "\u{2605}";
 pub const STAR_HOLLOW: &str = "\u{2606}";
 /// Marks a message with attachments.
 pub const ATTACHMENT: &str = "\u{1F4CE}";
-/// Print action. U+1F5A8 PRINTER is *not* in the bundled set; this is
-/// U+1F5B6 PRINTER ICON, which is.
-pub const PRINTER: &str = "\u{1F5B6}";
 /// Stands in for an image that was blocked or could not be decoded.
 pub const IMAGE: &str = "\u{1F5BC}";
 /// Delete, on the row under the pointer.
 pub const TRASH: &str = "\u{1F5D1}";
+/// Hands the message to something outside this window.
+pub const EXTERNAL: &str = "\u{2197}";
 /// Bullets for unordered lists, by nesting depth.
 pub const BULLETS: [&str; 3] = ["\u{2022}", "\u{25CB}", "\u{25AA}"];
 

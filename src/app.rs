@@ -658,7 +658,7 @@ impl RemailApp {
             }
             Action::OpenUrl(url) => self.open_url(&url),
             Action::SaveAttachment(index) => self.save_attachment(index),
-            Action::Print => self.print_open_message(),
+            Action::OpenInBrowser => self.open_message_in_browser(),
 
             Action::MarkFolderRead { account, mailbox } => {
                 self.engine.send(Command::MarkAllRead { account, mailbox });
@@ -1081,7 +1081,16 @@ impl RemailApp {
 
     /// Writes the open message out as a standalone document and hands it to
     /// the system, which opens it in a browser where the print dialog lives.
-    fn print_open_message(&mut self) {
+    /// Hands the open message to whatever opens HTML, which on every desktop
+    /// is a browser.
+    ///
+    /// For the message the reader cannot do justice to: one built as a page,
+    /// where a sanitized block model is a poor likeness of what was sent. The
+    /// document is the same one printing uses — self-contained, `cid:` parts
+    /// inlined, remote content still blocked if this message is blocking it —
+    /// so nothing is disclosed by opening it that the reader had not already
+    /// disclosed.
+    fn open_message_in_browser(&mut self) {
         let Some(open) = &self.open_message else { return };
         let (Some(body), Some(prepared)) = (&open.body, &open.prepared) else {
             self.status = "Still loading that message".into();
@@ -1091,8 +1100,8 @@ impl RemailApp {
         let document = crate::html::print::document(&open.envelope, body, prepared);
         match self.write_print_file(&document) {
             Ok(path) => match open::that_detached(&path) {
-                Ok(()) => self.status = "Opened for printing".into(),
-                Err(e) => self.status = format!("Could not open the print view: {e}"),
+                Ok(()) => self.status = "Opened in your browser".into(),
+                Err(e) => self.status = format!("Could not open a browser: {e}"),
             },
             Err(e) => self.status = format!("Could not prepare the message: {e}"),
         }

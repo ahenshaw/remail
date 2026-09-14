@@ -21,8 +21,10 @@ renderer for message bodies.
   their own size and font from any family installed on the system.
 - **Private by default.** Remote images are blocked until you ask for them,
   per message.
-- **Print** hands the message to your browser, where print preview, page setup
-  and PDF export already live.
+- **Open in your browser** for mail built as a page, which the built-in
+  renderer linearizes rather than lays out. The browser gets the same
+  sanitized document, still withholding whatever the reader was withholding.
+  Print preview, page setup and PDF export are there too.
 - **Recipient completion** from every address the account has seen, ranked so
   the people you write to come before the lists that write to you.
 - **A search language**: `subject:invoice from:jane -is:read since:2w`. The
@@ -229,8 +231,10 @@ the current background.
 
 It does not implement the CSS cascade, floats, or flexbox — heavily
 art-directed mail gets linearized into readable content. When that loses
-something, **Print** renders the message in your browser, which does have a
-full engine.
+something, **Browser** hands the message to one that does have a full engine.
+The document it opens is the sanitized one, with `cid:` parts inlined so it
+stands on its own, and with remote content still blocked if the message is
+still blocking it — so opening it discloses nothing that reading it had not.
 
 ### Sync
 

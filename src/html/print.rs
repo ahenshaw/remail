@@ -172,6 +172,27 @@ mod tests {
         (envelope, body)
     }
 
+    /// The document handed to the browser must withhold whatever the reader
+    /// was withholding. Opening a message somewhere with a full engine is a
+    /// rendering decision, not a decision to tell the sender it was read.
+    #[test]
+    fn remote_content_stays_blocked_on_the_way_to_the_browser() {
+        let (envelope, body) = message();
+        let html = "<p>Hello</p><img src=\"https://tracker.example.com/open.gif\">\
+                    <img src=\"http://cdn.example.com/banner.png\">";
+
+        let blocked = crate::html::Prepared::from_parts(Some(html), None, false).unwrap();
+        assert_eq!(blocked.blocked_remote, 2, "the sanitizer let something through");
+        let withheld = document(&envelope, &body, &blocked);
+        assert!(!withheld.contains("tracker.example.com"), "{withheld}");
+        assert!(!withheld.contains("cdn.example.com"), "{withheld}");
+
+        // And carries it when the reader has been told to.
+        let allowed = crate::html::Prepared::from_parts(Some(html), None, true).unwrap();
+        let carried = document(&envelope, &body, &allowed);
+        assert!(carried.contains("tracker.example.com"), "an allowed image was dropped");
+    }
+
     fn prepared(html: &str) -> Prepared {
         Prepared { document: Default::default(), html: html.to_string(), blocked_remote: 0 }
     }
