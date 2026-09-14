@@ -186,9 +186,9 @@ pub fn show(ui: &mut Ui, input: ListInput<'_>) -> ListOutput {
                 pending = Some(chosen);
             }
 
-            let trash = (hovered && !input.compact).then(|| {
+            let trash = hovered.then(|| {
                 ui.interact(
-                    trash_rect(rect, metrics),
+                    trash_rect(rect, metrics, input.compact),
                     ui.id().with(("trash", envelope.uid)),
                     Sense::click(),
                 )
@@ -389,7 +389,7 @@ fn draw_row(
     }
 
     let left = rect.left() + 12.0;
-    let right = rect.right() - MARKER_STRIP;
+    let right = rect.right() - marker_strip(input.compact);
     let text_left = left;
 
     let date = format_date_short(envelope.date);
@@ -417,10 +417,17 @@ fn draw_row(
     };
 
     let first_line_width = (right - date_width - text_left).max(40.0);
+    // A compact row puts the subject on this same line, so the sender gets
+    // its column and not the width of the line.
+    let sender_width = if input.compact {
+        (first_line_width * COMPACT_SENDER_SHARE - 8.0).max(30.0)
+    } else {
+        first_line_width
+    };
     let _ = paint_truncated(
         painter,
         pos2(text_left, rect.top() + metrics.sender_y),
-        first_line_width,
+        sender_width,
         &sender,
         font(size * 0.95),
         // egui has one weight per family, so "strong" is a colour, not a
@@ -432,7 +439,7 @@ fn draw_row(
         // One line: sender, then subject sharing the row. There is no preview
         // line to hang a folder chip from, so the folder is appended to the
         // subject instead.
-        let subject_left = text_left + first_line_width * 0.32;
+        let subject_left = text_left + first_line_width * COMPACT_SENDER_SHARE;
         let _ = paint_truncated(
             painter,
             pos2(subject_left, rect.top() + metrics.subject_y),
@@ -510,9 +517,9 @@ fn draw_row(
     // Only under the pointer: a row the user is not on has nothing to say
     // about deleting it, and a trashcan on every row would be a column of
     // them down the pane.
-    if hovered && !input.compact {
+    if hovered {
         painter.text(
-            trash_rect(rect, metrics).center(),
+            trash_rect(rect, metrics, input.compact).center(),
             Align2::CENTER_CENTER,
             super::icons::TRASH,
             font(super::icons::size_beside_text(size) * 0.82),
@@ -521,18 +528,33 @@ fn draw_row(
     }
 }
 
+/// Share of the first line a compact row gives the sender before the subject
+/// starts. The sender is held to it and the subject begins at it, from this
+/// one number, because the two used to be written out separately and the
+/// sender was given the whole line — so any name longer than its column was
+/// printed straight over the subject.
+const COMPACT_SENDER_SHARE: f32 = 0.32;
+
 /// Width of the strip down the right of a row that the text stops short of.
 ///
-/// The star lives at the top of it and the trashcan at the bottom, so neither
-/// has to be paid for by shortening the subject when it appears.
-const MARKER_STRIP: f32 = 38.0;
+/// Reserved whether or not the trashcan is showing, so a row does not reflow
+/// under the pointer. A full row stacks the star above the trashcan and needs
+/// the width of one; a compact row is a single line, so they sit side by side
+/// and it needs the width of both.
+fn marker_strip(compact: bool) -> f32 {
+    if compact { 60.0 } else { 38.0 }
+}
 
 /// Hit area for the star, at the top of the strip.
+///
+/// Kept inside the row. A compact row at a small text size is shorter than
+/// the 22pt this wants, and the overhang belonged to the row underneath: a
+/// click at the top of one row toggled the star of the row above it.
 fn star_rect(rect: Rect, metrics: RowMetrics) -> Rect {
-    Rect::from_min_size(
-        pos2(rect.right() - 30.0, rect.top() + metrics.sender_y - 2.0),
-        Vec2::splat(22.0),
-    )
+    const SIDE: f32 = 22.0;
+    let side = SIDE.min(rect.height());
+    let top = (rect.top() + metrics.sender_y - 2.0).clamp(rect.top(), rect.bottom() - side);
+    Rect::from_min_size(pos2(rect.right() - 30.0, top), Vec2::splat(side))
 }
 
 /// Hit area for the trashcan, at the bottom of the strip.
@@ -545,10 +567,20 @@ fn star_rect(rect: Rect, metrics: RowMetrics) -> Rect {
 /// it still meet in the middle, and two hit areas sharing a pixel send the
 /// click to whichever was asked for it first — which would have been the
 /// star, silently, on the rows where it happened.
-fn trash_rect(rect: Rect, metrics: RowMetrics) -> Rect {
+fn trash_rect(rect: Rect, metrics: RowMetrics, compact: bool) -> Rect {
     const SIDE: f32 = 22.0;
+    let star = star_rect(rect, metrics);
+    if compact {
+        // Beside the star rather than below it, level with the one line the
+        // row has. A shared edge is still a shared pixel, so it stops short
+        // of the star by one.
+        return Rect::from_min_size(
+            pos2(star.left() - SIDE - 1.0, star.top()),
+            Vec2::new(SIDE, star.height()),
+        );
+    }
     // A shared edge is still a shared pixel, so the gap is a real one.
-    let top = (rect.bottom() - SIDE - 4.0).max(star_rect(rect, metrics).bottom() + 1.0);
+    let top = (rect.bottom() - SIDE - 4.0).max(star.bottom() + 1.0);
     let height = (rect.bottom() - top).clamp(0.0, SIDE);
     Rect::from_min_size(pos2(rect.right() - 29.0, top), Vec2::new(SIDE, height))
 }
@@ -628,26 +660,43 @@ mod tests {
     /// back into the text.
     #[test]
     fn the_star_and_the_trashcan_keep_out_of_each_other() {
-        for size in [10.0_f32, 14.0, 16.4, 26.0] {
-            let metrics = RowMetrics::new(size, false);
-            let row = Rect::from_min_size(pos2(0.0, 0.0), Vec2::new(430.0, metrics.height));
-            let star = star_rect(row, metrics);
-            let trash = trash_rect(row, metrics);
+        for compact in [false, true] {
+            for size in [10.0_f32, 14.0, 16.4, 26.0] {
+                let metrics = RowMetrics::new(size, compact);
+                let row = Rect::from_min_size(pos2(0.0, 0.0), Vec2::new(430.0, metrics.height));
+                let star = star_rect(row, metrics);
+                let trash = trash_rect(row, metrics, compact);
+                let what = format!("size {size}, compact {compact}");
+                let text_ends = row.right() - marker_strip(compact);
 
-            assert!(
-                !star.intersects(trash),
-                "at size {size} the star {star:?} and the trashcan {trash:?} overlap"
-            );
-            assert!(row.contains_rect(trash), "at size {size} the trashcan leaves the row");
-            assert!(
-                trash.left() >= row.right() - MARKER_STRIP,
-                "at size {size} the trashcan reaches into the text column"
-            );
-            assert!(
-                star.left() >= row.right() - MARKER_STRIP,
-                "at size {size} the star reaches into the text column"
-            );
+                assert!(
+                    !star.intersects(trash),
+                    "{what}: the star {star:?} and the trashcan {trash:?} overlap"
+                );
+                assert!(row.contains_rect(trash), "{what}: the trashcan leaves the row");
+                assert!(row.contains_rect(star), "{what}: the star leaves the row");
+                assert!(
+                    trash.left() >= text_ends,
+                    "{what}: the trashcan reaches into the text column"
+                );
+                assert!(star.left() >= text_ends, "{what}: the star reaches into the text column");
+            }
         }
+    }
+
+    /// A compact row puts the sender and the subject on one line. The sender
+    /// is held to its column so the two cannot be written over each other,
+    /// which is what a sender given the width of the whole line did.
+    #[test]
+    fn a_compact_sender_stops_where_the_subject_starts() {
+        let line = 300.0_f32;
+        let sender_width = (line * COMPACT_SENDER_SHARE - 8.0).max(30.0);
+        let subject_left = line * COMPACT_SENDER_SHARE;
+        assert!(
+            sender_width <= subject_left,
+            "the sender runs {:.1}pt past where the subject begins",
+            sender_width - subject_left
+        );
     }
 
     #[test]
