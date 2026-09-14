@@ -128,6 +128,11 @@ pub enum Command {
         scope: SearchScope,
         /// Whether Spam and Trash are included in a whole-account search.
         include_spam_and_trash: bool,
+        /// Which search this is. Handed back with the results so the caller
+        /// can tell them from the results of a search it has since moved on
+        /// from — there is no way to stop one that is already running, and a
+        /// whole-account search takes long enough to be abandoned.
+        generation: u64,
     },
     /// Run the interactive OAuth flow for an account.
     SignIn(AccountId),
@@ -218,6 +223,8 @@ pub enum Event {
         account: AccountId,
         mailbox: String,
         envelopes: Vec<Envelope>,
+        /// The `generation` of the [`Command::Search`] these answer.
+        generation: u64,
     },
     Sent,
     /// The account is configured for OAuth but has never been authorized, so
@@ -678,8 +685,10 @@ impl AccountWorker {
                 self.events.status(self.account, format!("Deleted {mailbox}"));
                 self.refresh_mailboxes().await?;
             }
-            Command::Search { mailbox, query, scope, include_spam_and_trash, .. } => {
-                self.search(&mailbox, &query, scope, include_spam_and_trash).await?;
+            Command::Search {
+                mailbox, query, scope, include_spam_and_trash, generation, ..
+            } => {
+                self.search(&mailbox, &query, scope, include_spam_and_trash, generation).await?;
             }
             Command::Send { draft } => {
                 self.send(draft).await?;
@@ -1180,6 +1189,7 @@ impl AccountWorker {
         query: &str,
         scope: SearchScope,
         include_spam_and_trash: bool,
+        generation: u64,
     ) -> Result<()> {
         let account = self.account;
         let criteria = Query::parse(query)?.to_imap()?;
@@ -1228,6 +1238,7 @@ impl AccountWorker {
             account,
             mailbox: mailbox.to_string(),
             envelopes: results,
+            generation,
         });
         Ok(())
     }

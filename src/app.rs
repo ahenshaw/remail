@@ -100,6 +100,12 @@ pub struct RemailApp {
     /// bar and dims the rows the search is about to replace, which until it
     /// returns are the local filter's answer rather than the one asked for.
     searching: bool,
+    /// Which search the screen is waiting for. Raised whenever one is started
+    /// or abandoned, so the results of an earlier one can be told apart from
+    /// the results of this one: a search cannot be stopped once it is
+    /// running, and a whole-account search runs long enough to be given up
+    /// on, cleared, and replaced before it answers.
+    search_generation: u64,
 
     open_message: Option<OpenMessage>,
     textures: TextureCache,
@@ -166,6 +172,7 @@ impl RemailApp {
             search_scope: SearchScope::default(),
             search_results: None,
             searching: false,
+            search_generation: 0,
             open_message: None,
             textures: TextureCache::new(),
             remote_images,
@@ -417,8 +424,12 @@ impl RemailApp {
                 self.textures.clear();
             }
 
-            Event::SearchResults { account, mailbox, envelopes } => {
-                if !self.is_open(account, &mailbox) {
+            Event::SearchResults { account, mailbox, envelopes, generation } => {
+                // A search that has been superseded or cleared still runs to
+                // completion and still answers. Its results would otherwise
+                // replace the listing the user is looking at now, minutes
+                // after they stopped asking for them.
+                if generation != self.search_generation || !self.is_open(account, &mailbox) {
                     return;
                 }
                 let count = envelopes.len();
@@ -533,11 +544,13 @@ impl RemailApp {
                         scope.label().to_lowercase()
                     );
                     self.searching = true;
+                    self.search_generation += 1;
                     self.engine.send(Command::Search {
                         account,
                         mailbox,
                         query,
                         scope,
+                        generation: self.search_generation,
                         include_spam_and_trash,
                     });
                 }
@@ -546,6 +559,9 @@ impl RemailApp {
                 self.search.clear();
                 self.search_results = None;
                 self.searching = false;
+                // Whatever is still running out there is now answering a
+                // question that has been withdrawn.
+                self.search_generation += 1;
             }
 
             Action::LoadRemoteImages => {
@@ -2186,6 +2202,73 @@ fn pick_files() -> Option<Vec<std::path::PathBuf>> {
 
 #[cfg(test)]
 mod tests {
+    /// An application with nothing configured, for exercising the state the
+    /// interface keeps rather than anything it draws or fetches.
+    fn app() -> RemailApp {
+        let ctx = Context::default();
+        let store = crate::mail::Store::open_memory().expect("in-memory store");
+        let mut app = RemailApp::new(&ctx, Config::default(), store).expect("app");
+        app.open_mailbox = Some((1, "INBOX".to_string()));
+        app
+    }
+
+    fn results(generation: u64) -> Event {
+        Event::SearchResults {
+            account: 1,
+            mailbox: "INBOX".to_string(),
+            envelopes: vec![Envelope { uid: 7, ..Default::default() }],
+            generation,
+        }
+    }
+
+    /// A search cannot be stopped once it is running. Having given up on one,
+    /// the results must not arrive later and replace what is on screen.
+    #[test]
+    fn results_from_an_abandoned_search_are_ignored() {
+        let mut app = app();
+
+        app.apply(Action::SearchServer("pickleball".into()));
+        let abandoned = app.search_generation;
+        assert!(app.searching, "the search did not start");
+
+        // Given up on: the box is cleared and the spinner stops.
+        app.apply(Action::ClearSearch);
+        assert!(!app.searching);
+
+        app.handle_event(results(abandoned));
+        assert!(
+            app.search_results.is_none(),
+            "a search the user cleared came back and filled the list anyway"
+        );
+        assert!(!app.searching, "and restarted the spinner");
+    }
+
+    /// The same, for a search replaced by a newer one rather than cleared.
+    /// The older answer usually arrives second, having had further to go.
+    #[test]
+    fn results_from_a_superseded_search_are_ignored() {
+        let mut app = app();
+
+        app.apply(Action::SearchServer("pickleball".into()));
+        let first = app.search_generation;
+        app.apply(Action::SearchServer("from:dupr".into()));
+        let second = app.search_generation;
+        assert_ne!(first, second, "the second search reused the first one's identity");
+
+        app.handle_event(results(first));
+        assert!(app.search_results.is_none(), "the abandoned search answered for the current one");
+        assert!(app.searching, "and stopped the spinner while the current one was still out");
+
+        app.handle_event(results(second));
+        assert_eq!(
+            app.search_results.as_ref().map(Vec::len),
+            Some(1),
+            "the current search's own \
+             results were dropped with the rest"
+        );
+        assert!(!app.searching, "the spinner ran on past the results");
+    }
+
     /// The scope selector, the query box and the buttons beside them are one
     /// row of controls and have to read as one: the same height, on one
     /// centreline. Nothing in their construction enforces it — each is sized
