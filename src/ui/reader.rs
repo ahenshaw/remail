@@ -254,6 +254,9 @@ fn header(
 /// sender also reveals future opens, before you have decided on them.
 fn privacy_notice(ui: &mut Ui, blocked: usize, sender: Option<&str>, action: &mut Option<Action>) {
     ui.add_space(6.0);
+    // `multiline`, because the body is a sentence rather than a few words:
+    // the default layout puts it on the title's row and expects to truncate
+    // it, and what it did instead was draw it over the top.
     Callout::new(CalloutTone::Info)
         .icon(glyphs::EYE_OFF.to_string())
         .title(format!(
@@ -262,27 +265,35 @@ fn privacy_notice(ui: &mut Ui, blocked: usize, sender: Option<&str>, action: &mu
             if blocked == 1 { "image" } else { "images" }
         ))
         .body("Loading them tells the sender you opened this message.")
+        .multiline()
         .tinted()
-        .show(ui, |ui| {
-            if ui
-                .add(Button::new("Load images").size(ButtonSize::Small))
-                .on_hover_text("Remembered for this message")
+        // The buttons go under the notice rather than in its action area,
+        // which is right-aligned on the title's row and does not wrap: on a
+        // reading pane narrower than about five hundred points there is not
+        // room for both, and what does not fit is drawn over the title.
+        .show(ui, |_| {});
+
+    ui.add_space(4.0);
+    ui.horizontal_wrapped(|ui| {
+        if ui
+            .add(Button::new("Load images").size(ButtonSize::Small))
+            .on_hover_text("Remembered for this message")
+            .clicked()
+        {
+            *action = Some(Action::LoadRemoteImages);
+        }
+        if let Some(sender) = sender
+            && ui
+                .add(Button::new("Always from sender").size(ButtonSize::Small).outline())
+                .on_hover_text(format!(
+                    "Load remote content from {sender} without asking, including \
+                     in messages you have not opened yet"
+                ))
                 .clicked()
-            {
-                *action = Some(Action::LoadRemoteImages);
-            }
-            if let Some(sender) = sender
-                && ui
-                    .add(Button::new("Always from sender").size(ButtonSize::Small).outline())
-                    .on_hover_text(format!(
-                        "Load remote content from {sender} without asking, including \
-                         in messages you have not opened yet"
-                    ))
-                    .clicked()
-            {
-                *action = Some(Action::AllowRemoteSender);
-            }
-        });
+        {
+            *action = Some(Action::AllowRemoteSender);
+        }
+    });
     ui.add_space(4.0);
 }
 
@@ -361,6 +372,70 @@ fn join_addrs(addrs: &[crate::mail::Addr]) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// The notice explaining blocked images once drew its body, and both its
+    /// buttons, on top of its own title. Two mistakes at once: a body that is
+    /// a sentence needs `multiline`, and the action area is right-aligned on
+    /// the title's row and does not wrap.
+    ///
+    /// Measured on the callout rather than on the pane, for the reason the
+    /// test below gives: egui keeps laid-out widget rects to itself.
+    #[test]
+    fn a_notice_with_a_sentence_and_buttons_needs_both_of_them() {
+        let theme = crate::config::ThemeChoice::Outlook.theme();
+        let title = "11 remote images blocked";
+        let body = "Loading them tells the sender you opened this message.";
+
+        // How tall the notice comes out. Overlapping text is text that was
+        // not given a line of its own, so the broken arrangements are the
+        // short ones.
+        let height = |multiline: bool, buttons_inside: bool| {
+            crate::ui::raster::measure(&theme, egui::vec2(420.0, 300.0), |ui| {
+                let add = |ui: &mut egui::Ui| {
+                    ui.add(elegance::Button::new("Load images").size(elegance::ButtonSize::Small));
+                    ui.add(
+                        elegance::Button::new("Always from sender")
+                            .size(elegance::ButtonSize::Small)
+                            .outline(),
+                    );
+                };
+                let mut callout = elegance::Callout::new(elegance::CalloutTone::Info)
+                    .icon(elegance::glyphs::EYE_OFF.to_string())
+                    .title(title)
+                    .body(body)
+                    .tinted();
+                if multiline {
+                    callout = callout.multiline();
+                }
+                if buttons_inside {
+                    callout.show(ui, add);
+                } else {
+                    callout.show(ui, |_| {});
+                    ui.horizontal_wrapped(add);
+                }
+                ui.min_rect().height()
+            })
+        };
+
+        let everything_on_one_row = height(false, true);
+        let body_given_its_own_line = height(true, true);
+        let and_the_buttons_too = height(false, false);
+        let both = height(true, false);
+
+        assert!(
+            body_given_its_own_line > everything_on_one_row,
+            "`multiline` did not give the body a line of its own"
+        );
+        assert!(
+            and_the_buttons_too > everything_on_one_row,
+            "moving the buttons out did not give them a row of their own"
+        );
+        assert!(
+            both > body_given_its_own_line && both > and_the_buttons_too,
+            "the arrangement the reader uses is no taller than the ones missing half of it: \
+             {both} against {body_given_its_own_line} and {and_the_buttons_too}"
+        );
+    }
+
     /// Why the reader's toolbar does not push its last two buttons to the
     /// right, which is the obvious way to write it and what it used to do.
     ///
