@@ -396,6 +396,12 @@ pub struct UiSettings {
     /// is dark already, where there is nothing to set apart.
     #[serde(default)]
     pub dark_folders: bool,
+    /// Face for the interface itself: buttons, labels, dialogs, the query
+    /// box. Separate from the panes because it is chrome rather than content,
+    /// and because what egui draws it in by default is a light weight — which
+    /// looks thin beside panes set in anything else.
+    #[serde(default)]
+    pub interface_font: PaneFont,
     /// Width of the folder pane, in points. Restored on startup.
     pub folders_width: f32,
     /// Width of the message list pane, in points.
@@ -420,6 +426,7 @@ impl Default for UiSettings {
             reading: PaneStyle::default(),
             compact_list: false,
             dark_folders: false,
+            interface_font: PaneFont::default(),
             folders_width: 200.0,
             messages_width: 380.0,
             mark_read_after_secs: 1.5,

@@ -474,6 +474,27 @@ pub fn settings(
             .on_disabled_hover_text("This theme is already dark");
 
             ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                ui.add_sized([74.0, 20.0], egui::Label::new("Interface"));
+                if ui
+                    .add(
+                        Button::new(config.ui.interface_font.label())
+                            .size(ButtonSize::Small)
+                            .outline()
+                            .min_width(150.0),
+                    )
+                    .on_hover_text(
+                        "Buttons, labels and dialogs. The built-in face is a light weight, \
+                         which reads thin beside panes set in anything else.",
+                    )
+                    .clicked()
+                {
+                    picker.target = Some(Pane::Interface);
+                    picker.filter.clear();
+                }
+            });
+
+            ui.add_space(10.0);
             ui.label(theme.heading_text("Panes"));
             ui.label(theme.faint_text(
                 "Each pane can override the base size. A denser folder list and a \
@@ -565,6 +586,7 @@ pub fn settings(
         && let Some(font) = font_picker(ctx, picker, families, theme)
     {
         match target {
+            Pane::Interface => config.ui.interface_font = font,
             Pane::Folders => config.ui.folders.font = font,
             Pane::Messages => config.ui.messages.font = font,
             Pane::Reading => config.ui.reading.font = font,
@@ -744,6 +766,9 @@ fn is_valid_folder_name(name: &str, delimiter: Option<&str>) -> bool {
 /// Which pane the font picker is choosing for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pane {
+    /// Not a pane: the window around them. Kept here because it is chosen
+    /// the same way and from the same list.
+    Interface,
     Folders,
     Messages,
     Reading,
@@ -869,6 +894,7 @@ fn settings_equal(a: &crate::config::UiSettings, b: &crate::config::UiSettings) 
         && a.initial_sync_count == b.initial_sync_count
         && a.compact_list == b.compact_list
         && a.dark_folders == b.dark_folders
+        && a.interface_font == b.interface_font
         && (a.font_size - b.font_size).abs() < f32::EPSILON
         && (a.mark_read_after_secs - b.mark_read_after_secs).abs() < f32::EPSILON
         && a.folders == b.folders

@@ -1379,6 +1379,10 @@ impl eframe::App for RemailApp {
         // The folder list recedes onto the app surface; the messages and
         // reading panes share the card colour, so they read as one sheet of
         // paper split by the panel's separator line.
+        // Before anything is laid out: every widget that is not one of the
+        // three panes draws in whatever Proportional is when it is asked.
+        self.fonts.use_for_interface(&ctx, &self.config.read().unwrap().ui.interface_font.clone());
+
         let palette = &self.theme.palette;
         // The folder pane can be given its own polarity. Everything it draws
         // is taken from the theme it is handed, so this is the whole of the

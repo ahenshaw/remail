@@ -26,6 +26,9 @@ pub struct FontLibrary {
     failed: BTreeSet<String>,
     /// Resolved families, keyed by the name asked for.
     resolved: HashMap<String, FontFamily>,
+    /// The Proportional chain as it was before the interface font moved it,
+    /// so choosing the built-in face again puts it back.
+    original_proportional: Option<Vec<String>>,
 }
 
 impl FontLibrary {
@@ -58,6 +61,7 @@ impl FontLibrary {
             installed: BTreeSet::new(),
             failed: BTreeSet::new(),
             resolved: HashMap::new(),
+            original_proportional: None,
         }
     }
 
@@ -110,6 +114,77 @@ impl FontLibrary {
 
         ctx.request_repaint();
         FontFamily::Proportional
+    }
+
+    /// Draws the interface itself in `font`, rather than only the panes.
+    ///
+    /// Every widget egui lays out — buttons, labels, dialogs, the query box —
+    /// asks for [`FontFamily::Proportional`], which is the bundled
+    /// Ubuntu-Light and is a light weight. A window whose panes are set in a
+    /// regular face and whose chrome is not looks thin beside itself, and
+    /// there was no way to say otherwise: a pane font is installed under its
+    /// own name and Proportional is never touched.
+    ///
+    /// Called every frame, and does nothing on the frames where the family is
+    /// already at the front of that chain.
+    pub fn use_for_interface(&mut self, ctx: &Context, font: &PaneFont) {
+        // Asked for by name, so it cannot be confused with a family that has
+        // not finished binding: `resolve` answers Proportional for both, and
+        // reading that as a choice would undo the chosen face on every frame
+        // it spent loading.
+        if matches!(font, PaneFont::Sans) {
+            return self.restore_interface(ctx);
+        }
+
+        let family = self.resolve(ctx, font);
+        let wanted: Vec<String> = match &family {
+            // Not bound yet. `resolve` has asked for a repaint; try then.
+            FontFamily::Proportional => return,
+            FontFamily::Monospace => ctx.fonts(|fonts| {
+                fonts
+                    .definitions()
+                    .families
+                    .get(&FontFamily::Monospace)
+                    .cloned()
+                    .unwrap_or_default()
+            }),
+            FontFamily::Name(name) => ctx.fonts(|fonts| {
+                fonts
+                    .definitions()
+                    .families
+                    .get(&FontFamily::Name(name.clone()))
+                    .cloned()
+                    .unwrap_or_default()
+            }),
+        };
+        if wanted.is_empty() {
+            return;
+        }
+        self.set_proportional(ctx, wanted);
+    }
+
+    /// Puts the interface back to the faces it started with.
+    fn restore_interface(&mut self, ctx: &Context) {
+        let Some(original) = self.original_proportional.clone() else { return };
+        self.set_proportional(ctx, original);
+    }
+
+    /// Rewrites the Proportional chain, remembering what was there first.
+    ///
+    /// Read back out of the context and written whole, for the reason
+    /// [`FontLibrary::install`] gives: `set_fonts` replaces the registry, and
+    /// anything not in what is handed to it is gone — the theme's symbols
+    /// font among them.
+    fn set_proportional(&mut self, ctx: &Context, chain: Vec<String>) {
+        let mut definitions = ctx.fonts(|fonts| fonts.definitions().clone());
+        let current = definitions.families.entry(FontFamily::Proportional).or_default();
+
+        self.original_proportional.get_or_insert_with(|| current.clone());
+        if *current == chain {
+            return;
+        }
+        *current = chain;
+        ctx.set_fonts(definitions);
     }
 
     /// Hands a family's face data to egui. Returns whether it was found.
@@ -180,6 +255,7 @@ mod tests {
             installed: BTreeSet::new(),
             failed: BTreeSet::new(),
             resolved: HashMap::new(),
+            original_proportional: None,
         };
         let ctx = Context::default();
         assert_eq!(library.resolve(&ctx, &PaneFont::Sans), FontFamily::Proportional);
@@ -245,6 +321,79 @@ mod tests {
         out.textures_delta.clear();
     }
 
+    /// The interface draws in whatever Proportional holds, so choosing a face
+    /// for it means moving that family — and putting it back when the choice
+    /// is withdrawn.
+    #[test]
+    fn the_interface_font_moves_the_proportional_family_and_restores_it() {
+        let ctx = Context::default();
+        crate::config::ThemeChoice::Outlook.theme().install(&ctx);
+
+        let mut library = FontLibrary::load();
+        let Some(family) = library.families().first().cloned() else {
+            return; // Nothing installed on this machine to choose.
+        };
+
+        let raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::pos2(0.0, 0.0),
+                egui::vec2(200.0, 60.0),
+            )),
+            ..Default::default()
+        };
+        let proportional = |ctx: &Context| -> Vec<String> {
+            ctx.fonts(|fonts| {
+                fonts
+                    .definitions()
+                    .families
+                    .get(&FontFamily::Proportional)
+                    .cloned()
+                    .unwrap_or_default()
+            })
+        };
+
+        let pass = |library: &mut FontLibrary, font: PaneFont| {
+            let mut out = ctx.run_ui(raw.clone(), |ui| {
+                library.use_for_interface(ui.ctx(), &font);
+            });
+            out.textures_delta.clear();
+        };
+
+        let before = {
+            let mut out = ctx.run_ui(raw.clone(), |_| {});
+            out.textures_delta.clear();
+            proportional(&ctx)
+        };
+        assert!(!before.is_empty(), "nothing was drawing the interface to begin with");
+
+        // Several passes: the family is handed over on one and bound on a
+        // later one, which is why this is called every frame.
+        for _ in 0..4 {
+            pass(&mut library, PaneFont::Named(family.clone()));
+        }
+
+        let chosen = proportional(&ctx);
+        assert_eq!(
+            chosen.first().map(String::as_str),
+            Some(format!("system:{family}").as_str()),
+            "the interface is not drawing in the face it was given"
+        );
+        assert!(
+            chosen.iter().any(|face| before.contains(face)),
+            "the faces behind it were dropped rather than fallen back to: {chosen:?}"
+        );
+        assert!(
+            ctx.fonts(|fonts| fonts.definitions().font_data.contains_key("elegance-symbols")),
+            "choosing an interface font evicted the theme's symbols"
+        );
+
+        // And back, when the built-in face is chosen again.
+        for _ in 0..2 {
+            pass(&mut library, PaneFont::Sans);
+        }
+        assert_eq!(proportional(&ctx), before, "the interface did not go back");
+    }
+
     /// A missing family never reaches the font set, so this stays off the
     /// path that needs a live frame.
     #[test]
@@ -256,6 +405,7 @@ mod tests {
             installed: BTreeSet::new(),
             failed: BTreeSet::new(),
             resolved: HashMap::new(),
+            original_proportional: None,
         };
         let ctx = Context::default();
         let font = PaneFont::Named("No Such Font".into());
