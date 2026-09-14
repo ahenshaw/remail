@@ -406,6 +406,20 @@ fn draw_row(
         width + 10.0
     };
 
+    // The attachment marker shares a line with text in both densities — the
+    // preview on a full row, the subject and the date on a compact one — so
+    // it is measured before either is laid out. Drawn without reserving the
+    // width, it simply went on top: over the preview on a full row, over the
+    // clock on a compact one.
+    let clip_font = font(super::icons::size_beside_text(size) * 0.82);
+    let clip_width = if envelope.has_attachments {
+        let galley =
+            painter.layout_no_wrap(super::icons::ATTACHMENT.to_string(), clip_font.clone(), weak);
+        galley.size().x + 6.0
+    } else {
+        0.0
+    };
+
     let sender = if envelope.is_outgoing(input.outgoing) {
         recipients(envelope)
     } else {
@@ -443,7 +457,7 @@ fn draw_row(
         let _ = paint_truncated(
             painter,
             pos2(subject_left, rect.top() + metrics.subject_y),
-            (right - date_width - subject_left).max(40.0),
+            compact_subject_width(right, subject_left, date_width, clip_width),
             &compact_subject(envelope, input.show_folder),
             font(size * 0.95),
             subject_color,
@@ -485,7 +499,7 @@ fn draw_row(
             let _ = paint_truncated(
                 painter,
                 pos2(preview_left, rect.top() + metrics.preview_y),
-                right - preview_left,
+                preview_width(right, preview_left, clip_width),
                 &envelope.preview,
                 font(size * 0.82),
                 palette.text,
@@ -494,15 +508,20 @@ fn draw_row(
     }
 
     if envelope.has_attachments {
-        painter.text(
-            pos2(right - 4.0, rect.bottom() - 8.0),
-            Align2::RIGHT_BOTTOM,
-            super::icons::ATTACHMENT,
-            // Undo the bundled emoji font's shrink, then step back down: a
-            // secondary marker, but not a speck.
-            font(super::icons::size_beside_text(size) * 0.82),
-            weak,
-        );
+        // A full row has a preview line to end with. A compact row has only
+        // the one line, so the marker goes to the left of the date rather
+        // than on top of it.
+        let (at, anchor) = if input.compact {
+            (
+                pos2(right - date_width, rect.top() + metrics.subject_y + size * 0.1),
+                Align2::RIGHT_TOP,
+            )
+        } else {
+            (pos2(right - 2.0, rect.bottom() - 8.0), Align2::RIGHT_BOTTOM)
+        };
+        // The font undoes the bundled emoji font's shrink, then steps back
+        // down: a secondary marker, but not a speck.
+        painter.text(at, anchor, super::icons::ATTACHMENT, clip_font, weak);
     }
 
     let starred = envelope.flags.has(Flags::FLAGGED);
@@ -526,6 +545,18 @@ fn draw_row(
             weak,
         );
     }
+}
+
+/// Width the subject gets on a compact row: the line, less the date, less the
+/// attachment marker when there is one.
+fn compact_subject_width(right: f32, subject_left: f32, date_width: f32, clip: f32) -> f32 {
+    (right - date_width - clip - subject_left).max(40.0)
+}
+
+/// Width the preview gets on a full row, less the attachment marker that ends
+/// the same line.
+fn preview_width(right: f32, preview_left: f32, clip: f32) -> f32 {
+    (right - preview_left - clip).max(0.0)
 }
 
 /// Share of the first line a compact row gives the sender before the subject
@@ -682,6 +713,30 @@ mod tests {
                 assert!(star.left() >= text_ends, "{what}: the star reaches into the text column");
             }
         }
+    }
+
+    /// Whatever shares a line with the attachment marker has to be given
+    /// less room for it. Both of these once took the full span and the
+    /// marker was drawn over the end of them — over the preview on a full
+    /// row, over the clock on a compact one.
+    #[test]
+    fn the_attachment_marker_is_paid_for_out_of_the_text() {
+        const RIGHT: f32 = 400.0;
+        const CLIP: f32 = 18.0;
+
+        let without = compact_subject_width(RIGHT, 60.0, 70.0, 0.0);
+        let with = compact_subject_width(RIGHT, 60.0, 70.0, CLIP);
+        assert!(with < without, "a compact subject kept its width beside the marker");
+        assert!((without - with - CLIP).abs() < 0.01, "it did not give up the marker's width");
+
+        let without = preview_width(RIGHT, 12.0, 0.0);
+        let with = preview_width(RIGHT, 12.0, CLIP);
+        assert!(with < without, "a preview kept its width beside the marker");
+        assert!((without - with - CLIP).abs() < 0.01, "it did not give up the marker's width");
+
+        // A narrow pane must not hand out a negative width.
+        assert!(preview_width(40.0, 30.0, CLIP) >= 0.0);
+        assert!(compact_subject_width(40.0, 30.0, 70.0, CLIP) >= 0.0);
     }
 
     /// A compact row puts the sender and the subject on one line. The sender
