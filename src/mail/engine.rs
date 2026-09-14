@@ -9,7 +9,7 @@
 //! offers `IDLE`) one parked in IDLE that pokes the command task whenever the
 //! mailbox changes.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
@@ -432,6 +432,7 @@ impl Supervisor {
             supervisor: self.commands.clone(),
             idle_cancel: Arc::new(Notify::new()),
             idle_running: false,
+            prefetch: VecDeque::new(),
         };
         tokio::spawn(worker.run(rx));
         self.workers.insert(account, tx.clone());
@@ -502,7 +503,35 @@ struct AccountWorker {
     supervisor: mpsc::UnboundedSender<Command>,
     idle_cancel: Arc<Notify>,
     idle_running: bool,
+    /// Messages to warm the cache with, one per turn of the loop and only
+    /// when nothing the user asked for is waiting. Held as a queue rather
+    /// than fetched where the command arrives, because a command is handled
+    /// to completion: a run of these used to hold the worker for as long as
+    /// it took to fetch every one of them.
+    prefetch: VecDeque<(String, u32)>,
 }
+
+/// Adds prefetch requests to the queue, holding it to
+/// [`PREFETCH_QUEUE_LIMIT`].
+///
+/// What overflows is dropped from the front, the oldest request being the one
+/// the reader has most likely scrolled past. Nothing is lost by it: a message
+/// that is never prefetched is fetched the moment it is opened.
+fn enqueue_prefetch(
+    queue: &mut VecDeque<(String, u32)>,
+    mailbox: &str,
+    uids: impl Iterator<Item = u32>,
+) {
+    queue.extend(uids.map(|uid| (mailbox.to_string(), uid)));
+    let excess = queue.len().saturating_sub(PREFETCH_QUEUE_LIMIT);
+    queue.drain(..excess);
+}
+
+/// How many messages may be queued for prefetching before the oldest are
+/// dropped. Scrolling fast enough to overrun this asks for more than the
+/// cache can usefully hold anyway, and anything dropped is still fetched the
+/// moment it is opened.
+const PREFETCH_QUEUE_LIMIT: usize = 500;
 
 impl AccountWorker {
     async fn run(mut self, mut rx: mpsc::UnboundedReceiver<Command>) {
@@ -516,6 +545,12 @@ impl AccountWorker {
 
         loop {
             tokio::select! {
+                // Ordered, not random: a command the user is waiting on is
+                // always taken before another speculative fetch. The prefetch
+                // branch is ready whenever the queue is not empty, so it runs
+                // only on a turn where nothing else was.
+                biased;
+
                 command = rx.recv() => {
                     let Some(command) = command else { break };
                     if let Err(e) = self.handle(command).await {
@@ -534,6 +569,12 @@ impl AccountWorker {
                         self.events.error(self.account, &e);
                         self.drop_connection();
                     }
+                }
+                // One message, then back to the top to look for commands
+                // again. The guard is what keeps this branch from spinning
+                // when there is nothing queued.
+                () = std::future::ready(()), if !self.prefetch.is_empty() => {
+                    self.prefetch_one().await;
                 }
             }
         }
@@ -588,17 +629,10 @@ impl AccountWorker {
                 self.load_body(&mailbox, uid, !served).await?;
             }
             Command::Prefetch { mailbox, uids, .. } => {
-                for uid in uids {
-                    if self.store.has_body(self.account, &mailbox, uid) {
-                        continue;
-                    }
-                    // Prefetch failures are not worth reporting; the user has
-                    // not asked for these messages yet.
-                    if self.load_body(&mailbox, uid, false).await.is_err() {
-                        break;
-                    }
-                }
-                let _ = self.store.prune_bodies(BODY_CACHE_BYTES);
+                let wanted = uids
+                    .into_iter()
+                    .filter(|uid| !self.store.has_body(self.account, &mailbox, *uid));
+                enqueue_prefetch(&mut self.prefetch, &mailbox, wanted);
             }
             Command::SetFlag { mailbox, uids, bit, add, .. } => {
                 self.set_flag(&mailbox, &uids, bit, add).await?;
@@ -947,6 +981,32 @@ impl AccountWorker {
             });
         }
         Ok(())
+    }
+
+    /// Warms the cache with one queued message.
+    ///
+    /// Failures are not reported: the user has not asked for these. A failure
+    /// does stop the run, because it usually means the connection is gone and
+    /// the rest of the queue would fail the same way; what is left is dropped
+    /// rather than retried, since every one of them is fetched on demand the
+    /// moment it is opened.
+    async fn prefetch_one(&mut self) {
+        let Some((mailbox, uid)) = self.prefetch.pop_front() else { return };
+
+        if self.store.has_body(self.account, &mailbox, uid) {
+            return;
+        }
+        if self.load_body(&mailbox, uid, false).await.is_err() {
+            // Same reasoning as a failed command: the connection may have
+            // been left in an unknown state, and the rest of the queue would
+            // fail behind it. Dropped so the next real command reconnects
+            // rather than inheriting it.
+            self.drop_connection();
+            self.prefetch.clear();
+        }
+        if self.prefetch.is_empty() {
+            let _ = self.store.prune_bodies(BODY_CACHE_BYTES);
+        }
     }
 
     /// Loads a body from the cache, falling back to the server.
@@ -1373,6 +1433,41 @@ pub fn save_password(account: AccountId, password: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_prefetch_queue_keeps_the_newest_requests() {
+        let mut queue = VecDeque::new();
+
+        enqueue_prefetch(&mut queue, "INBOX", 1..=3);
+        assert_eq!(
+            queue.iter().map(|(_, uid)| *uid).collect::<Vec<_>>(),
+            vec![1, 2, 3],
+            "requests are fetched in the order they were asked for"
+        );
+
+        // Well past the limit, in two goes, so the drop has to span them.
+        let over = PREFETCH_QUEUE_LIMIT as u32 + 50;
+        enqueue_prefetch(&mut queue, "INBOX", 10..10 + over);
+        assert_eq!(queue.len(), PREFETCH_QUEUE_LIMIT, "the queue grew past its limit");
+
+        let uids: Vec<u32> = queue.iter().map(|(_, uid)| *uid).collect();
+        assert_eq!(
+            uids.last(),
+            Some(&(10 + over - 1)),
+            "the newest request was dropped instead of the oldest"
+        );
+        assert!(!uids.contains(&1), "the oldest request survived the overflow");
+    }
+
+    #[test]
+    fn the_prefetch_queue_carries_the_mailbox_each_request_came_from() {
+        let mut queue = VecDeque::new();
+        enqueue_prefetch(&mut queue, "INBOX", 1..=2);
+        enqueue_prefetch(&mut queue, "[Gmail]/Sent Mail", 7..=7);
+
+        assert_eq!(queue.back().unwrap().0, "[Gmail]/Sent Mail");
+        assert_eq!(queue.front().unwrap().0, "INBOX");
+    }
 
     /// A cached body is answered by the supervisor, so it does not queue
     /// behind whatever the account worker is part way through.
