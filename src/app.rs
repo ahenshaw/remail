@@ -33,12 +33,15 @@ const PREFETCH_MARGIN: usize = 6;
 /// discoverable from the box it applies to; see `mail::query`.
 /// Height of every control in the search bar.
 ///
-/// The scope selector decides it: `Select` offers no size of its own, and its
-/// typography and the theme's control padding come to 29pt. `ButtonSize`
-/// `Medium` lands on exactly that, and the query box at its full height comes
-/// to a point over — nearer than its compact height is by six, which is what
-/// it was set at while the buttons were `Small` and nothing matched anything.
-/// A point of slack on one control, centred, is not a thing the eye can find.
+/// Sits between the two controls that will not be told: `ButtonSize::Medium`
+/// comes to 29pt and the query box at its full height to 30.12, neither of
+/// them adjustable any nearer. The scope selector is held to this number
+/// exactly, through the one lever it has — see `search_controls` — rather
+/// than left to arrive near it on its own, which is what it was doing when
+/// it kept turning up short.
+///
+/// A point of slack between the other two, centred, is not a thing the eye
+/// can find. A selector sized by whichever font is drawing its label is.
 const SEARCH_BAR_HEIGHT: f32 = 30.0;
 
 const SEARCH_SYNTAX: &str = "\
@@ -1494,6 +1497,13 @@ impl RemailApp {
     fn search_controls(&mut self, ui: &mut egui::Ui) -> Option<Action> {
         let mut action = None;
 
+        // The scope selector is an egui `ComboBox` underneath, and a
+        // ComboBox is never shorter than `interact_size.y`. Saying the
+        // number outright is the only height in this bar that does not come
+        // out of a font: left to itself the selector is as tall as its own
+        // label, which moves with the face that ends up drawing it.
+        ui.spacing_mut().interact_size.y = SEARCH_BAR_HEIGHT;
+
         // Scope applies to the server-side search that Enter runs; the
         // as-you-type filter always works on what is already loaded.
         let mut scope = self.search_scope;
@@ -2174,6 +2184,7 @@ mod tests {
                     egui::vec2(ui.available_width(), SEARCH_BAR_HEIGHT),
                     egui::Layout::left_to_right(egui::Align::Center),
                     |ui| {
+                        ui.spacing_mut().interact_size.y = SEARCH_BAR_HEIGHT;
                         let mut scope = SearchScope::All;
                         let select = ui.add(
                             elegance::Select::new("scope", &mut scope)
@@ -2211,6 +2222,16 @@ mod tests {
                 rect.height()
             );
         }
+
+        // The selector is the one that is actually told, so it is held to
+        // the number rather than to the tolerance the other two need.
+        let scope = rects[0].1;
+        assert!(
+            (scope.height() - SEARCH_BAR_HEIGHT).abs() < 0.01,
+            "the scope selector is {:.2}, not {SEARCH_BAR_HEIGHT}: interact_size is what \
+             holds it there, and nothing else in its construction will",
+            scope.height()
+        );
 
         let centres: Vec<f32> = rects.iter().map(|(_, rect)| rect.center().y).collect();
         let highest = centres.iter().copied().fold(f32::MAX, f32::min);
