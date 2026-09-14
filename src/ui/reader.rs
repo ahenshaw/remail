@@ -169,20 +169,20 @@ fn header(
         if ui
             .add(
                 Button::new(format!("{} Reply", glyphs::ARROW_LEFT))
-                    .size(ButtonSize::Medium)
+                    .size(ButtonSize::Small)
                     .accent(Accent::Blue),
             )
             .clicked()
         {
             *action = Some(Action::Reply { all: false });
         }
-        if ui.add(Button::new("Reply all").size(ButtonSize::Medium).outline()).clicked() {
+        if ui.add(Button::new("Reply all").size(ButtonSize::Small).outline()).clicked() {
             *action = Some(Action::Reply { all: true });
         }
         if ui
             .add(
                 Button::new(format!("{} Forward", glyphs::ARROW_RIGHT))
-                    .size(ButtonSize::Medium)
+                    .size(ButtonSize::Small)
                     .outline(),
             )
             .clicked()
@@ -192,7 +192,7 @@ fn header(
         if ui
             .add(
                 Button::new(format!("{} Archive", glyphs::FOLDER))
-                    .size(ButtonSize::Medium)
+                    .size(ButtonSize::Small)
                     .outline(),
             )
             .clicked()
@@ -201,13 +201,10 @@ fn header(
         }
         if ui
             .add(
-                // No accent: `outline` has no fill to colour, and asking
-                // for red here only looked like it said something. Deleting
-                // is undone by the trash folder, not by shouting about it,
-                // and a toolbar whose loudest button is Delete is worse than
-                // one where it reads as what it is — another thing to do
-                // with the message.
-                Button::new(format!("{} Delete", glyphs::TRASH)).size(ButtonSize::Medium).outline(),
+                Button::new(format!("{} Delete", glyphs::TRASH))
+                    .size(ButtonSize::Small)
+                    .outline()
+                    .accent(Accent::Red),
             )
             .clicked()
         {
@@ -223,7 +220,7 @@ fn header(
         ui.separator();
 
         let label = if *show_source { "Rendered" } else { "Source" };
-        if ui.add(Button::new(label).size(ButtonSize::Medium).outline()).clicked() {
+        if ui.add(Button::new(label).size(ButtonSize::Small).outline()).clicked() {
             *show_source = !*show_source;
         }
         // The reader draws a sanitized block model, which is the right
@@ -235,7 +232,7 @@ fn header(
         if ui
             .add(
                 Button::new(format!("{} Browser", super::icons::EXTERNAL))
-                    .size(ButtonSize::Medium)
+                    .size(ButtonSize::Small)
                     .outline(),
             )
             .on_hover_text(
@@ -517,45 +514,5 @@ mod tests {
             in_the_row.is_empty(),
             "the arrangement the reader uses overlapped at {in_the_row:?}"
         );
-    }
-}
-
-#[cfg(test)]
-mod render_tests {
-    use super::*;
-
-    /// Writes a picture of the reader's header, for looking at the button row
-    /// without launching the application. Two widths, because how it wraps is
-    /// most of what there is to look at.
-    ///
-    ///     REMAIL_RENDER=/tmp cargo test render_header -- --ignored
-    #[test]
-    #[ignore = "writes a file; run it when you want to look at something"]
-    fn render_header() {
-        let dir = std::env::var("REMAIL_RENDER").unwrap_or_else(|_| "/tmp".into());
-        let theme = crate::config::ThemeChoice::Outlook.theme();
-        let envelope = Envelope {
-            subject: "2026 ALTA Fall Pickleball League".into(),
-            from: vec![crate::mail::Addr {
-                name: "Bonny Robichaud".into(),
-                email: "bonny@example.com".into(),
-            }],
-            date: 1789238659,
-            ..Default::default()
-        };
-        for width in [620.0_f32, 380.0] {
-            crate::ui::raster::render(
-                &format!("{dir}/header_{}.png", width as u32),
-                &theme,
-                width,
-                260.0,
-                2.0,
-                |ui| {
-                    let mut action = None;
-                    let mut show_source = false;
-                    header(ui, &envelope, &theme, &mut action, &mut show_source);
-                },
-            );
-        }
     }
 }
