@@ -144,22 +144,24 @@ pub fn show(ui: &mut Ui, input: ListInput<'_>) -> ListOutput {
                 response.dnd_set_drag_payload(DraggedMessages { account: input.account, rows });
             }
 
+            // The star and the trashcan are hit areas laid over the row, and
+            // whichever the pointer is on takes the hover from underneath it.
+            // Asking where the pointer is instead keeps the row lit, and the
+            // trashcan on it, while it is being aimed at.
+            let hovered = response.hovered() || ui.rect_contains_pointer(rect);
+
             if ui.is_rect_visible(rect) {
                 draw_row(
                     ui,
                     rect,
                     envelope,
-                    RowState { index, is_cursor, is_selected, hovered: response.hovered() },
+                    RowState { index, is_cursor, is_selected, hovered },
                     &input,
                     metrics,
                 );
             }
 
-            // The star sits in its own hit area at the right edge.
-            let star_rect = Rect::from_min_size(
-                pos2(rect.right() - 30.0, rect.top() + metrics.sender_y - 2.0),
-                Vec2::splat(22.0),
-            );
+            let star_rect = star_rect(rect, metrics);
             // Right-click acts on the selection when the row is part of it,
             // and on the row alone otherwise — so the menu never silently
             // operates on something other than what was clicked.
@@ -184,8 +186,25 @@ pub fn show(ui: &mut Ui, input: ListInput<'_>) -> ListOutput {
                 pending = Some(chosen);
             }
 
+            let trash = (hovered && !input.compact).then(|| {
+                ui.interact(
+                    trash_rect(rect, metrics),
+                    ui.id().with(("trash", envelope.uid)),
+                    Sense::click(),
+                )
+            });
+
             let star = ui.interact(star_rect, ui.id().with(("star", envelope.uid)), Sense::click());
-            if star.clicked() {
+            if trash.is_some_and(|trash| trash.clicked()) {
+                // Delete acts on the selection, so a row outside it is
+                // focused first — the same order a right-click takes, and
+                // for the same reason: the click must not act on something
+                // other than the row it landed on.
+                if !input.selection.contains(&key) {
+                    action = Some(Action::Focus(key.clone()));
+                }
+                pending = Some(Action::Delete);
+            } else if star.clicked() {
                 action = Some(Action::ToggleStar(key.clone()));
             } else if response.clicked() {
                 let modifiers = ui.input(|i| i.modifiers);
@@ -370,7 +389,7 @@ fn draw_row(
     }
 
     let left = rect.left() + 12.0;
-    let right = rect.right() - 38.0;
+    let right = rect.right() - MARKER_STRIP;
     let text_left = left;
 
     let date = format_date_short(envelope.date);
@@ -487,9 +506,53 @@ fn draw_row(
         font(size * 0.95),
         if starred { Color32::from_rgb(230, 180, 60) } else { weak.gamma_multiply(0.6) },
     );
+
+    // Only under the pointer: a row the user is not on has nothing to say
+    // about deleting it, and a trashcan on every row would be a column of
+    // them down the pane.
+    if hovered && !input.compact {
+        painter.text(
+            trash_rect(rect, metrics).center(),
+            Align2::CENTER_CENTER,
+            super::icons::TRASH,
+            font(super::icons::size_beside_text(size) * 0.82),
+            weak,
+        );
+    }
 }
 
-/// Subject for a compact row, with the folder appended while searching.
+/// Width of the strip down the right of a row that the text stops short of.
+///
+/// The star lives at the top of it and the trashcan at the bottom, so neither
+/// has to be paid for by shortening the subject when it appears.
+const MARKER_STRIP: f32 = 38.0;
+
+/// Hit area for the star, at the top of the strip.
+fn star_rect(rect: Rect, metrics: RowMetrics) -> Rect {
+    Rect::from_min_size(
+        pos2(rect.right() - 30.0, rect.top() + metrics.sender_y - 2.0),
+        Vec2::splat(22.0),
+    )
+}
+
+/// Hit area for the trashcan, at the bottom of the strip.
+///
+/// Only offered on a full row: a compact one is a single line tall, and the
+/// strip beside it is already the star's.
+///
+/// Held below the star rather than simply placed near the bottom. At a small
+/// text size the row is short enough that two 22pt areas at opposite ends of
+/// it still meet in the middle, and two hit areas sharing a pixel send the
+/// click to whichever was asked for it first — which would have been the
+/// star, silently, on the rows where it happened.
+fn trash_rect(rect: Rect, metrics: RowMetrics) -> Rect {
+    const SIDE: f32 = 22.0;
+    // A shared edge is still a shared pixel, so the gap is a real one.
+    let top = (rect.bottom() - SIDE - 4.0).max(star_rect(rect, metrics).bottom() + 1.0);
+    let height = (rect.bottom() - top).clamp(0.0, SIDE);
+    Rect::from_min_size(pos2(rect.right() - 29.0, top), Vec2::new(SIDE, height))
+}
+
 /// Who a sent message went to, for the line that carries the sender
 /// everywhere else.
 ///
@@ -505,6 +568,7 @@ fn recipients(envelope: &Envelope) -> String {
     }
 }
 
+/// Subject for a compact row, with the folder appended while searching.
 fn compact_subject(envelope: &Envelope, show_folder: bool) -> String {
     let subject = display_subject(envelope);
     let folder = envelope.folder_label();
@@ -556,6 +620,34 @@ mod tests {
     #[test]
     fn a_sent_message_with_no_recipients_says_so() {
         assert_eq!(recipients(&Envelope::default()), "(no recipients)");
+    }
+
+    /// The two markers share the strip down the right of a row, one at each
+    /// end of it. They must not share any of it with each other — a click
+    /// meant for one would land on whichever was asked first — nor reach
+    /// back into the text.
+    #[test]
+    fn the_star_and_the_trashcan_keep_out_of_each_other() {
+        for size in [10.0_f32, 14.0, 16.4, 26.0] {
+            let metrics = RowMetrics::new(size, false);
+            let row = Rect::from_min_size(pos2(0.0, 0.0), Vec2::new(430.0, metrics.height));
+            let star = star_rect(row, metrics);
+            let trash = trash_rect(row, metrics);
+
+            assert!(
+                !star.intersects(trash),
+                "at size {size} the star {star:?} and the trashcan {trash:?} overlap"
+            );
+            assert!(row.contains_rect(trash), "at size {size} the trashcan leaves the row");
+            assert!(
+                trash.left() >= row.right() - MARKER_STRIP,
+                "at size {size} the trashcan reaches into the text column"
+            );
+            assert!(
+                star.left() >= row.right() - MARKER_STRIP,
+                "at size {size} the star reaches into the text column"
+            );
+        }
     }
 
     #[test]

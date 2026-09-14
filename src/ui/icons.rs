@@ -28,6 +28,8 @@ pub const ATTACHMENT: &str = "\u{1F4CE}";
 pub const PRINTER: &str = "\u{1F5B6}";
 /// Stands in for an image that was blocked or could not be decoded.
 pub const IMAGE: &str = "\u{1F5BC}";
+/// Delete, on the row under the pointer.
+pub const TRASH: &str = "\u{1F5D1}";
 /// Bullets for unordered lists, by nesting depth.
 pub const BULLETS: [&str; 3] = ["\u{2022}", "\u{25CB}", "\u{25AA}"];
 
