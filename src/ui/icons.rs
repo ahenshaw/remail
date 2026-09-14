@@ -78,6 +78,12 @@ pub fn draw_mailbox(
             painter.add(line(vec![p(0.50, 0.12), p(0.50, 0.56)]));
             painter.add(line(vec![p(0.30, 0.38), p(0.50, 0.58), p(0.70, 0.38)]));
         }
+        S::Search => {
+            // A glass: a circle with a handle, which is what a search is
+            // everywhere else.
+            painter.add(Shape::circle_stroke(p(0.44, 0.44), rect.width() * 0.26, stroke));
+            painter.add(line(vec![p(0.64, 0.64), p(0.88, 0.88)]));
+        }
         S::Sent => {
             // The same tray, with mail leaving it.
             painter.add(line(vec![p(0.08, 0.50), p(0.08, 0.88), p(0.92, 0.88), p(0.92, 0.50)]));

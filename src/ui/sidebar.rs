@@ -31,6 +31,16 @@ pub struct SidebarInput<'a> {
     pub config: &'a Config,
     pub accounts: &'a mut HashMap<AccountId, AccountView>,
     pub selected: Option<(AccountId, &'a str)>,
+    /// The account holding search results, and how many of them are unread.
+    /// Drawn above that account's folders as a place to go back to; absent
+    /// when there has been no search, which is why it is not in the mailbox
+    /// list.
+    ///
+    /// Unread rather than the number found, because the badge means unread
+    /// on every other row and a count that meant something else there would
+    /// be read as that one. It costs nothing: these are envelopes already in
+    /// hand.
+    pub search: Option<(AccountId, usize)>,
     pub font: FontId,
     pub theme: &'a Theme,
     pub spring: &'a mut SpringLoad,
@@ -102,7 +112,7 @@ impl SpringLoad {
 }
 
 pub fn show(ui: &mut Ui, input: SidebarInput<'_>) -> Option<Action> {
-    let SidebarInput { config, accounts, selected, font: pane_font, theme, spring } = input;
+    let SidebarInput { config, accounts, selected, search, font: pane_font, theme, spring } = input;
     let mut action = None;
 
     // The payload outlives the frame, so this is also how the sidebar knows
@@ -197,6 +207,34 @@ pub fn show(ui: &mut Ui, input: SidebarInput<'_>) -> Option<Action> {
                     .filter(|m| m.selectable)
                     .map(|m| m.name.as_str())
                     .collect();
+
+                if let Some((search_account, unread)) = search
+                    && search_account == account.id
+                {
+                    let mut mailbox = MailboxInfo::search_results();
+                    mailbox.unseen = unread as u32;
+                    let outcome = mailbox_row(
+                        ui,
+                        RowInput {
+                            mailbox: &mailbox,
+                            account: account.id,
+                            depth: 0,
+                            selected: selected
+                                == Some((account.id, crate::mail::model::SEARCH_MAILBOX)),
+                            has_children: false,
+                            collapsed: false,
+                            font: &font,
+                            palette: &theme.palette,
+                            row_height,
+                        },
+                    );
+                    if matches!(outcome.outcome, Some(RowOutcome::Open)) {
+                        action = Some(Action::OpenMailbox {
+                            account: account.id,
+                            mailbox: crate::mail::model::SEARCH_MAILBOX.to_string(),
+                        });
+                    }
+                }
 
                 for mailbox in view.mailboxes.iter().filter(|m| m.selectable) {
                     // Hidden if anything above it is collapsed.
@@ -416,6 +454,7 @@ fn accepts_drop(
     payload: &super::DraggedMessages,
 ) -> bool {
     mailbox.selectable
+        && mailbox.special != SpecialUse::Search
         && payload.account == account
         && payload.rows.iter().any(|row| row.mailbox != mailbox.name)
 }
@@ -636,6 +675,9 @@ fn icon_color(special: SpecialUse, palette: &elegance::Palette) -> Color32 {
         }
         // Deliberately not coloured: deleted mail should not draw the eye.
         SpecialUse::Trash => palette.text_faint,
+        // The accent, as everything else that is the application talking
+        // about itself rather than about the server.
+        SpecialUse::Search => palette.blue,
         SpecialUse::Normal | SpecialUse::Archive | SpecialUse::All => {
             pick(Color32::from_rgb(0xc4, 0x92, 0x3d), Color32::from_rgb(0xdc, 0xb9, 0x77))
         }
@@ -956,12 +998,12 @@ mod render_tests {
 
         // A count of each shape: none, one digit, two, three.
         let names: [(&str, SpecialUse, u32); 6] = [
+            ("Search results", SpecialUse::Search, 3),
             ("Inbox", SpecialUse::Inbox, 7),
             ("Reports", SpecialUse::Normal, 0),
             ("Work", SpecialUse::Normal, 42),
             ("Trash", SpecialUse::Trash, 0),
             ("Drafts", SpecialUse::Drafts, 128),
-            ("Engineering", SpecialUse::Normal, 0),
         ];
 
         crate::ui::raster::render(

@@ -51,6 +51,14 @@ impl Flags {
     }
 }
 
+/// The name of the folder that holds search results.
+///
+/// Reserved rather than chosen: a leading control character is not something
+/// a server will name a mailbox, so this cannot collide with a real one. It
+/// is never shown — [`MailboxInfo::display_name`] answers for it — and never
+/// sent to a server.
+pub const SEARCH_MAILBOX: &str = "\u{1}search";
+
 /// A mail address with its optional display name.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Addr {
@@ -196,6 +204,10 @@ pub enum SpecialUse {
     Archive,
     /// Gmail's virtual "All Mail".
     All,
+    /// Not a mailbox on any server: the results of the last search, given a
+    /// place in the sidebar so they can be returned to rather than lost the
+    /// moment something else is opened.
+    Search,
     #[default]
     Normal,
 }
@@ -204,14 +216,17 @@ impl SpecialUse {
     /// Sort rank so the common mailboxes stay at the top of the sidebar.
     pub fn rank(self) -> u8 {
         match self {
-            SpecialUse::Inbox => 0,
-            SpecialUse::Drafts => 1,
-            SpecialUse::Sent => 2,
-            SpecialUse::Archive => 3,
-            SpecialUse::All => 4,
-            SpecialUse::Junk => 5,
-            SpecialUse::Trash => 6,
-            SpecialUse::Normal => 7,
+            // Above the inbox: transient, and the thing most likely to be
+            // wanted back the moment something else is opened.
+            SpecialUse::Search => 0,
+            SpecialUse::Inbox => 1,
+            SpecialUse::Drafts => 2,
+            SpecialUse::Sent => 3,
+            SpecialUse::Archive => 4,
+            SpecialUse::All => 5,
+            SpecialUse::Junk => 6,
+            SpecialUse::Trash => 7,
+            SpecialUse::Normal => 8,
         }
     }
 }
@@ -239,7 +254,24 @@ impl MailboxInfo {
 
     /// The leaf as it should be shown.
     pub fn display_name(&self) -> &str {
+        if self.special == SpecialUse::Search {
+            return "Search results";
+        }
         display_folder(self.leaf())
+    }
+
+    /// The folder that holds search results, for an account that has some.
+    ///
+    /// Built where it is drawn rather than stored: it is not on any server,
+    /// and the lists that come back from one would drop it.
+    pub fn search_results() -> Self {
+        Self {
+            name: SEARCH_MAILBOX.to_string(),
+            delimiter: None,
+            special: SpecialUse::Search,
+            selectable: true,
+            unseen: 0,
+        }
     }
 
     /// Paths of this mailbox's ancestors, outermost first. `Maverick/HR`

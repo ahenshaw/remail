@@ -677,6 +677,10 @@ fn special_to_i64(s: SpecialUse) -> i64 {
         SpecialUse::Archive => 5,
         SpecialUse::All => 6,
         SpecialUse::Normal => 7,
+        // Never stored: it belongs to no server and is built where it is
+        // drawn. Mapped so the match is total, and read back as Normal,
+        // which is what a stray row would deserve to be.
+        SpecialUse::Search => 7,
     }
 }
 

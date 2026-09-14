@@ -156,8 +156,16 @@ pub struct RemailApp {
 
     search: String,
     search_scope: SearchScope,
-    /// Results of a server-side search, replacing the mailbox listing.
+    /// Results of a server-side search. Shown as the contents of a folder
+    /// that is on no server — see [`crate::mail::model::SEARCH_MAILBOX`] —
+    /// so they can be left and come back to rather than being a mode the
+    /// listing is stuck in until it is dismissed.
     search_results: Option<Vec<Envelope>>,
+    /// Which account those results belong to, and so which account's folders
+    /// the search folder is drawn among.
+    search_account: Option<AccountId>,
+    /// Where the search was started from, to go back to when it is cleared.
+    search_origin: Option<(AccountId, String)>,
     /// A server-side search is in flight. Drives the spinner in the search
     /// bar and dims the rows the search is about to replace, which until it
     /// returns are the local filter's answer rather than the one asked for.
@@ -172,8 +180,10 @@ pub struct RemailApp {
     open_message: Option<OpenMessage>,
     textures: TextureCache,
     remote_images: RemoteImages,
-    /// UIDs already sent for prefetch, so the engine is not asked twice.
-    prefetched: BTreeSet<u32>,
+    /// Rows already sent for prefetch, so the engine is not asked twice.
+    /// Keyed by row rather than by UID: in the search folder the rows come
+    /// from several mailboxes, where a UID on its own names more than one.
+    prefetched: BTreeSet<RowKey>,
     /// Rows hidden before the server confirmed, kept so a failed move or
     /// delete can put them back.
     pending_removal: Vec<Envelope>,
@@ -233,6 +243,8 @@ impl RemailApp {
             search: String::new(),
             search_scope: SearchScope::default(),
             search_results: None,
+            search_account: None,
+            search_origin: None,
             searching: false,
             search_generation: 0,
             open_message: None,
@@ -496,8 +508,13 @@ impl RemailApp {
                 }
                 let count = envelopes.len();
                 self.search_results = Some(envelopes);
+                self.search_account = Some(account);
                 self.searching = false;
                 self.status = format!("{count} matching messages");
+                // Opening it now rather than when the search started: until
+                // the results are here there is nothing in it, and the folder
+                // being looked at is a better thing to look at than that.
+                self.open_mailbox(account, crate::mail::model::SEARCH_MAILBOX.to_string());
             }
 
             Event::Sent => {
@@ -607,6 +624,12 @@ impl RemailApp {
                     );
                     self.searching = true;
                     self.search_generation += 1;
+                    // Where to go back to when the results are dismissed.
+                    // Not the search folder itself, or clearing would leave
+                    // nowhere to return to.
+                    if !self.in_search_folder() {
+                        self.search_origin = self.open_mailbox.clone();
+                    }
                     self.engine.send(Command::Search {
                         account,
                         mailbox,
@@ -620,8 +643,17 @@ impl RemailApp {
             Action::ClearSearch => {
                 let was_searching = self.searching;
                 self.search.clear();
-                self.search_results = None;
                 self.searching = false;
+                // Dismissing the results takes the folder with them, so go
+                // back to whatever was being read before the search.
+                if let Some((account, mailbox)) = self.search_origin.take()
+                    && self.in_search_folder()
+                {
+                    self.open_mailbox = None; // so `open_mailbox` does not no-op
+                    self.open_mailbox(account, mailbox);
+                }
+                self.search_results = None;
+                self.search_account = None;
                 // Whatever is still running out there is now answering a
                 // question that has been withdrawn. Telling the engine lets
                 // it stop rather than finish and be ignored, which matters
@@ -725,17 +757,34 @@ impl RemailApp {
         if self.is_open(account, &mailbox) {
             return;
         }
+        // Results outlive being navigated away from: that is what makes them
+        // a folder rather than a mode. They go when they are dismissed, or
+        // when a later search replaces them.
+        let to_search = mailbox == crate::mail::model::SEARCH_MAILBOX;
+
         self.open_mailbox = Some((account, mailbox.clone()));
-        self.envelopes.clear();
+        if !to_search {
+            // The search folder is not drawn from these, and keeping them
+            // means the folder they belong to is still there to come back to.
+            self.envelopes.clear();
+        }
         self.selection.clear();
         self.cursor = None;
         self.anchor = None;
         self.open_message = None;
-        self.search_results = None;
         self.prefetched.clear();
         self.pending_removal.clear();
         self.textures.clear();
-        self.engine.send(Command::OpenMailbox { account, mailbox });
+        if !to_search {
+            self.engine.send(Command::OpenMailbox { account, mailbox });
+        }
+    }
+
+    /// Whether the search folder is what is on screen.
+    fn in_search_folder(&self) -> bool {
+        self.open_mailbox
+            .as_ref()
+            .is_some_and(|(_, mailbox)| mailbox == crate::mail::model::SEARCH_MAILBOX)
     }
 
     /// Loads the body for the cursor row into the reader.
@@ -1158,12 +1207,16 @@ impl RemailApp {
     /// Which envelopes the list shows: search results if a search is active,
     /// otherwise the mailbox filtered by the query box.
     fn visible(&self) -> Vec<Envelope> {
-        if let Some(results) = &self.search_results {
-            return results.clone();
-        }
+        // In the search folder the results are the listing; the query box
+        // narrows them further, the same as it narrows any other folder.
+        let rows: &[Envelope] = match (self.in_search_folder(), &self.search_results) {
+            (true, Some(results)) => results,
+            _ => &self.envelopes,
+        };
+
         let typed = self.search.trim();
         if typed.is_empty() {
-            return self.envelopes.clone();
+            return rows.to_vec();
         }
 
         // A query half-typed is a query that does not parse — `subject:` on
@@ -1171,10 +1224,10 @@ impl RemailApp {
         // match keeps the list from emptying under the cursor; the error is
         // only worth reporting once Enter asks the server.
         match crate::mail::Query::parse(typed) {
-            Ok(query) => self.envelopes.iter().filter(|e| query.matches(e)).cloned().collect(),
+            Ok(query) => rows.iter().filter(|e| query.matches(e)).cloned().collect(),
             Err(_) => {
                 let needle = typed.to_ascii_lowercase();
-                self.envelopes.iter().filter(|e| e.matches(&needle)).cloned().collect()
+                rows.iter().filter(|e| e.matches(&needle)).cloned().collect()
             }
         }
     }
@@ -1398,6 +1451,10 @@ impl eframe::App for RemailApp {
                         config: &config,
                         accounts: &mut self.accounts,
                         selected,
+                        search: self.search_results.as_ref().and_then(|found| {
+                            let unread = found.iter().filter(|e| e.flags.is_unread()).count();
+                            Some((self.search_account?, unread))
+                        }),
                         font: folders_font.clone(),
                         theme: &folders_theme,
                         spring: &mut self.spring,
@@ -1788,7 +1845,7 @@ impl RemailApp {
             "Select a mailbox"
         } else if self.searching {
             "Searching\u{2026}"
-        } else if self.search_results.is_some() {
+        } else if self.in_search_folder() {
             "No messages matched"
         } else if !self.search.trim().is_empty() {
             // `body:` and `text:` reach the whole message on the server and
@@ -1829,17 +1886,14 @@ impl RemailApp {
                 cursor: self.cursor.clone(),
                 selection: &self.selection,
                 compact,
-                // Always while searching: the whole point of a result is
-                // that it came from somewhere you were not looking.
-                show_folder: self.search_results.is_some(),
+                // Always in the search folder: the whole point of a result
+                // is that it came from somewhere you were not looking.
+                show_folder: self.in_search_folder(),
                 outgoing: &outgoing,
                 theme: &self.theme,
                 font,
                 surface,
                 scroll_to_cursor,
-                // Only what a search is about to replace. A filter narrowing
-                // as it is typed is the answer, not a stand-in for one.
-                stale: self.searching,
                 empty_message,
             },
         );
@@ -1856,20 +1910,32 @@ impl RemailApp {
     /// Asks the engine to cache bodies around the viewport, so scrolling then
     /// clicking rarely waits on the network.
     fn prefetch(&mut self, visible: &[Envelope], range: std::ops::Range<usize>) {
-        let Some((account, mailbox)) = self.open_mailbox.clone() else { return };
+        let Some((account, open)) = self.open_mailbox.clone() else { return };
         if visible.is_empty() {
             return;
         }
 
         let start = range.start.saturating_sub(PREFETCH_MARGIN);
         let end = (range.end + PREFETCH_MARGIN).min(visible.len());
-        let uids: Vec<u32> = visible[start..end]
-            .iter()
-            .map(|e| e.uid)
-            .filter(|uid| self.prefetched.insert(*uid))
-            .collect();
 
-        if !uids.is_empty() {
+        // Grouped by the mailbox each row actually lives in, not by the one
+        // being looked at. In the search folder those differ — the rows came
+        // from wherever the search found them — and the folder itself is on
+        // no server to fetch from.
+        let mut wanted: HashMap<String, Vec<u32>> = HashMap::new();
+        for envelope in &visible[start..end] {
+            if !self.prefetched.insert(envelope.key()) {
+                continue;
+            }
+            let mailbox =
+                if envelope.mailbox.is_empty() { open.clone() } else { envelope.mailbox.clone() };
+            wanted.entry(mailbox).or_default().push(envelope.uid);
+        }
+
+        for (mailbox, uids) in wanted {
+            if mailbox == crate::mail::model::SEARCH_MAILBOX {
+                continue;
+            }
             self.engine.send(Command::Prefetch { account, mailbox, uids });
         }
     }
@@ -2418,13 +2484,103 @@ mod tests {
         app
     }
 
-    fn results(generation: u64) -> Event {
+    /// Results as the engine reports them: carrying the mailbox the search
+    /// was started from, which is what the reader checks it is still in.
+    fn results_from(mailbox: &str, generation: u64) -> Event {
         Event::SearchResults {
             account: 1,
-            mailbox: "INBOX".to_string(),
-            envelopes: vec![Envelope { uid: 7, ..Default::default() }],
+            mailbox: mailbox.to_string(),
+            envelopes: vec![Envelope {
+                uid: 7,
+                mailbox: "[Gmail]/All Mail".to_string(),
+                ..Default::default()
+            }],
             generation,
         }
+    }
+
+    fn results(generation: u64) -> Event {
+        results_from("INBOX", generation)
+    }
+
+    fn search_mailbox() -> String {
+        crate::mail::model::SEARCH_MAILBOX.to_string()
+    }
+
+    /// Results are a place, not a mode. Arriving puts the reader in that
+    /// place; they are not folded into whatever folder was already open.
+    #[test]
+    fn results_open_a_folder_of_their_own() {
+        let mut app = app();
+        assert_eq!(app.open_mailbox, Some((1, "INBOX".to_string())));
+
+        app.apply(Action::SearchServer("from:dupr".into()));
+        // Still in the inbox while the search is out: there is nothing in
+        // the results folder yet to look at.
+        assert_eq!(app.open_mailbox, Some((1, "INBOX".to_string())));
+
+        app.handle_event(results(app.search_generation));
+        assert_eq!(app.open_mailbox, Some((1, search_mailbox())), "the results were not opened");
+        assert_eq!(app.visible().len(), 1);
+    }
+
+    /// The point of it being a folder: leaving does not destroy it.
+    #[test]
+    fn results_survive_opening_another_folder() {
+        let mut app = app();
+        app.apply(Action::SearchServer("from:dupr".into()));
+        app.handle_event(results(app.search_generation));
+
+        app.apply(Action::OpenMailbox { account: 1, mailbox: "Archery".into() });
+        assert_eq!(app.open_mailbox, Some((1, "Archery".to_string())));
+        assert!(app.search_results.is_some(), "the results went with the folder change");
+
+        // And the folder is still there to go back to.
+        app.apply(Action::OpenMailbox { account: 1, mailbox: search_mailbox() });
+        assert_eq!(app.visible().len(), 1, "the results did not come back");
+    }
+
+    /// Dismissing them takes the folder away, so it has to put the reader
+    /// back where the search was started from.
+    #[test]
+    fn clearing_the_search_goes_back_where_it_started() {
+        let mut app = app();
+        app.apply(Action::OpenMailbox { account: 1, mailbox: "Keowee".into() });
+
+        app.apply(Action::SearchServer("from:dupr".into()));
+        app.handle_event(results_from("Keowee", app.search_generation));
+        assert_eq!(app.open_mailbox, Some((1, search_mailbox())));
+
+        app.apply(Action::ClearSearch);
+        assert_eq!(app.open_mailbox, Some((1, "Keowee".to_string())), "left nowhere to be");
+        assert!(app.search_results.is_none(), "the folder outlived being dismissed");
+    }
+
+    /// Dismissed from somewhere else, there is nothing to go back from.
+    #[test]
+    fn clearing_from_another_folder_stays_put() {
+        let mut app = app();
+        app.apply(Action::SearchServer("from:dupr".into()));
+        app.handle_event(results(app.search_generation));
+        app.apply(Action::OpenMailbox { account: 1, mailbox: "Archery".into() });
+
+        app.apply(Action::ClearSearch);
+        assert_eq!(app.open_mailbox, Some((1, "Archery".to_string())), "moved unasked");
+        assert!(app.search_results.is_none());
+    }
+
+    /// A query typed while the results are open narrows them, rather than
+    /// reaching past them into the folder underneath.
+    #[test]
+    fn typing_in_the_search_folder_narrows_the_results() {
+        let mut app = app();
+        app.envelopes =
+            vec![Envelope { uid: 99, subject: "In the inbox".into(), ..Default::default() }];
+        app.apply(Action::SearchServer("from:dupr".into()));
+        app.handle_event(results(app.search_generation));
+
+        app.search = "subject:nothing-matches-this".into();
+        assert!(app.visible().is_empty(), "the filter found the folder underneath");
     }
 
     /// A search cannot be stopped once it is running. Having given up on one,
