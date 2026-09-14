@@ -12,7 +12,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
 use tokio::sync::{Notify, mpsc};
@@ -300,6 +300,71 @@ impl Engine {
         // A closed channel means the runtime is shutting down; the UI has
         // nothing useful to do about it.
         let _ = self.commands.send(command);
+    }
+
+    /// Sends a command and blocks until it has been answered.
+    ///
+    /// The interface never needs this: it sends, returns to drawing, and
+    /// picks the answer up from [`Engine::poll`] on a later frame. Anything
+    /// without frames — a command-line tool, a test — has nowhere to go in
+    /// the meantime, so it waits here instead.
+    ///
+    /// `answer` is called with each event as it arrives and returns `Some`
+    /// for the one being waited on. Which event that is depends on the
+    /// command, and sometimes on its contents: a search is answered by the
+    /// results carrying its own generation, a body by the one carrying its
+    /// own UID.
+    pub fn send_and_wait<T>(
+        &mut self,
+        command: Command,
+        timeout: Duration,
+        answer: impl FnMut(&Event) -> Option<T>,
+    ) -> Result<T> {
+        self.send(command);
+        self.wait_for(timeout, answer)
+    }
+
+    /// Blocks until an event answers `answer`, or the wait runs out.
+    ///
+    /// An [`Event::Error`] that `answer` does not claim ends the wait as a
+    /// failure, rather than being passed over to sit out the timeout. A
+    /// caller that expects an error — testing one, or waiting through a
+    /// failure that does not concern it — claims it and carries on.
+    ///
+    /// Events arriving before the one wanted are consumed. This takes from
+    /// the same queue [`Engine::poll`] does, so a caller that uses both will
+    /// find that whatever this passed over has already been drained.
+    pub fn wait_for<T>(
+        &mut self,
+        timeout: Duration,
+        mut answer: impl FnMut(&Event) -> Option<T>,
+    ) -> Result<T> {
+        let deadline = Instant::now() + timeout;
+
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                bail!("nothing answered within {timeout:?}");
+            }
+
+            // The runtime is owned here, and this is not one of its threads.
+            let received = self
+                ._runtime
+                .block_on(async { tokio::time::timeout(left, self.events.recv()).await });
+
+            match received {
+                Err(_) => bail!("nothing answered within {timeout:?}"),
+                Ok(None) => bail!("the mail engine stopped"),
+                Ok(Some(event)) => {
+                    if let Some(answer) = answer(&event) {
+                        return Ok(answer);
+                    }
+                    if let Event::Error { text, .. } = event {
+                        bail!(text);
+                    }
+                }
+            }
+        }
     }
 
     /// Drains queued events. Called once per frame.
