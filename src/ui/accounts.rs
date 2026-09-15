@@ -615,6 +615,21 @@ pub enum FolderEdit {
         account: AccountId,
         mailbox: String,
     },
+    /// Keep the query on screen under a name. The query travels with it
+    /// because it is what is being saved; the name is what is being asked
+    /// for.
+    SaveSearch {
+        account: AccountId,
+        query: String,
+        scope: crate::mail::SearchScope,
+        include_spam_and_trash: bool,
+        name: String,
+    },
+    RenameSearch {
+        account: AccountId,
+        mailbox: String,
+        name: String,
+    },
 }
 
 /// What the folder dialog decided.
@@ -622,6 +637,8 @@ pub enum FolderAction {
     Create { account: AccountId, name: String },
     Rename { account: AccountId, from: String, to: String },
     Delete { account: AccountId, mailbox: String },
+    SaveSearch { account: AccountId, search: crate::config::SavedSearch },
+    RenameSearch { account: AccountId, mailbox: String, to: String },
 }
 
 /// The dialog for creating, renaming or deleting a folder.
@@ -710,6 +727,70 @@ pub fn folder_dialog(
                                 account: *account,
                                 from: mailbox.clone(),
                                 to,
+                            });
+                        }
+                        if ui.add(Button::new("Cancel").outline()).clicked() {
+                            cancelled = true;
+                        }
+                    });
+                });
+        }
+
+        FolderEdit::SaveSearch { account, query, scope, include_spam_and_trash, name } => {
+            Modal::new("search-save", &mut open)
+                .heading("Save this search")
+                .header_icon(glyphs::SEARCH.to_string())
+                .max_width(420.0)
+                .show(ctx, |ui| {
+                    ui.label(theme.muted_text(query.clone()));
+                    ui.add_space(6.0);
+                    ui.add(TextInput::new(name).label("Name").hint("Pickleball"));
+                    ui.add_space(6.0);
+                    ui.label(theme.faint_text(
+                        "Kept as a folder. Opening it fills from the cache and runs the \
+                         search again.",
+                    ));
+
+                    ui.add_space(10.0);
+                    ui.horizontal(|ui| {
+                        let valid = !name.trim().is_empty();
+                        if ui.add(Button::new("Save").accent(Accent::Blue).enabled(valid)).clicked()
+                        {
+                            done = Some(FolderAction::SaveSearch {
+                                account: *account,
+                                search: crate::config::SavedSearch {
+                                    name: name.trim().to_string(),
+                                    query: query.clone(),
+                                    scope: *scope,
+                                    include_spam_and_trash: *include_spam_and_trash,
+                                },
+                            });
+                        }
+                        if ui.add(Button::new("Cancel").outline()).clicked() {
+                            cancelled = true;
+                        }
+                    });
+                });
+        }
+
+        FolderEdit::RenameSearch { account, mailbox, name } => {
+            Modal::new("search-rename", &mut open)
+                .heading("Rename search")
+                .header_icon(glyphs::PENCIL.to_string())
+                .max_width(420.0)
+                .show(ctx, |ui| {
+                    ui.add(TextInput::new(name).label("Name"));
+                    ui.add_space(10.0);
+                    ui.horizontal(|ui| {
+                        let valid = !name.trim().is_empty();
+                        if ui
+                            .add(Button::new("Rename").accent(Accent::Blue).enabled(valid))
+                            .clicked()
+                        {
+                            done = Some(FolderAction::RenameSearch {
+                                account: *account,
+                                mailbox: mailbox.clone(),
+                                to: name.trim().to_string(),
                             });
                         }
                         if ui.add(Button::new("Cancel").outline()).clicked() {

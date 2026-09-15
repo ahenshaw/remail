@@ -10,6 +10,8 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
+use crate::mail::SearchScope;
+
 /// Stable identifier for an account. Assigned once and never reused, so cached
 /// rows in the SQLite store stay valid across reorderings of the account list.
 pub type AccountId = u32;
@@ -187,6 +189,23 @@ impl Identity {
     }
 }
 
+/// A search kept by name, so it can be run again by opening it.
+///
+/// The query rather than its results: results go stale, and a query does not.
+/// What it costs to reopen is one search; what it saves is composing the
+/// query again, which is the part that takes thought.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SavedSearch {
+    /// What the sidebar calls it. Chosen, not derived: a query long enough to
+    /// be worth saving is too long to read in a narrow column.
+    pub name: String,
+    pub query: String,
+    #[serde(default)]
+    pub scope: SearchScope,
+    #[serde(default)]
+    pub include_spam_and_trash: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AccountConfig {
     pub id: AccountId,
@@ -234,6 +253,12 @@ pub struct AccountConfig {
     #[serde(default = "yes")]
     pub enabled: bool,
 
+    /// Searches kept by name, drawn in the sidebar above this account's
+    /// folders. In the configuration rather than the cache: the cache is
+    /// disposable and these are not.
+    #[serde(default)]
+    pub saved_searches: Vec<SavedSearch>,
+
     /// Sidebar state: whether the account's folder list is showing, and
     /// which folders have their children hidden.
     ///
@@ -277,6 +302,7 @@ impl AccountConfig {
             sidebar_expanded: true,
             collapsed_folders: Vec::new(),
             enabled: true,
+            saved_searches: Vec::new(),
         }
     }
 
@@ -304,6 +330,7 @@ impl AccountConfig {
             sidebar_expanded: true,
             collapsed_folders: Vec::new(),
             enabled: true,
+            saved_searches: Vec::new(),
         }
     }
 

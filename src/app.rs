@@ -27,6 +27,12 @@ use crate::ui::sidebar::{AccountView, SidebarInput};
 use crate::ui::{Action, message_list, reader, sidebar};
 
 /// How many messages either side of the viewport to warm the cache with.
+/// How many cached envelopes a saved search is answered from while the server
+/// is being asked. The whole cache, in practice: a query is cheap to run over
+/// envelopes already in memory, and stopping short would hide older results
+/// that the server is about to return anyway.
+const CACHED_SEARCH_LIMIT: u32 = 50_000;
+
 const PREFETCH_MARGIN: usize = 6;
 
 /// Hover text for the search box. The language is only useful if it is
@@ -90,6 +96,13 @@ fn search_command(
 /// addresses and subjects contain everything eventually.
 fn shell_quote(word: &str) -> String {
     format!("'{}'", word.replace('\'', r"'\''"))
+}
+
+/// What the query box's context menu offers.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SearchMenu {
+    Save,
+    Copy,
 }
 
 /// Height of every control in the search bar.
@@ -156,14 +169,15 @@ pub struct RemailApp {
 
     search: String,
     search_scope: SearchScope,
-    /// Results of a server-side search. Shown as the contents of a folder
-    /// that is on no server — see [`crate::mail::model::SEARCH_MAILBOX`] —
-    /// so they can be left and come back to rather than being a mode the
-    /// listing is stuck in until it is dismissed.
-    search_results: Option<Vec<Envelope>>,
-    /// Which account those results belong to, and so which account's folders
-    /// the search folder is drawn among.
-    search_account: Option<AccountId>,
+    /// What each search folder is holding, keyed by the account and the
+    /// folder's reserved name. A map rather than one slot: saved searches are
+    /// folders too, and several can be full at once — opening one does not
+    /// empty the rest.
+    search_results: HashMap<(AccountId, String), Vec<Envelope>>,
+    /// The folder the search now running will fill when it answers. Held
+    /// because a search is started from the query box, which knows nothing
+    /// about which folder asked for it.
+    search_target: Option<(AccountId, String)>,
     /// Where the search was started from, to go back to when it is cleared.
     search_origin: Option<(AccountId, String)>,
     /// A server-side search is in flight. Drives the spinner in the search
@@ -242,8 +256,8 @@ impl RemailApp {
             scroll_to_cursor: false,
             search: String::new(),
             search_scope: SearchScope::default(),
-            search_results: None,
-            search_account: None,
+            search_results: HashMap::new(),
+            search_target: None,
             search_origin: None,
             searching: false,
             search_generation: 0,
@@ -423,7 +437,7 @@ impl RemailApp {
                 // It also covers messages deleted from another client.
                 take_rows(&mut self.pending_removal, &rows);
                 take_rows(&mut self.envelopes, &rows);
-                if let Some(results) = &mut self.search_results {
+                for results in self.search_results.values_mut() {
                     take_rows(results, &rows);
                 }
                 self.selection.retain(|key| !rows.contains(key));
@@ -454,7 +468,7 @@ impl RemailApp {
                     for envelope in self.envelopes.iter_mut().filter(|e| e.key() == key) {
                         envelope.flags = flags;
                     }
-                    if let Some(results) = &mut self.search_results {
+                    for results in self.search_results.values_mut() {
                         for envelope in results.iter_mut().filter(|e| e.key() == key) {
                             envelope.flags = flags;
                         }
@@ -476,7 +490,7 @@ impl RemailApp {
                     envelope.preview = preview.clone();
                     envelope.has_attachments = has_attachments;
                 }
-                if let Some(results) = &mut self.search_results {
+                for results in self.search_results.values_mut() {
                     for envelope in results.iter_mut().filter(|e| e.key() == key) {
                         envelope.preview = preview.clone();
                         envelope.has_attachments = has_attachments;
@@ -519,14 +533,20 @@ impl RemailApp {
                 // the folder in the sidebar say the results are waiting.
                 let expecting = self.is_open(account, &mailbox) || self.in_search_folder();
 
+                // Into the folder that asked. A saved search fills its own;
+                // the query box fills the unsaved one.
+                let target = self
+                    .search_target
+                    .take()
+                    .unwrap_or((account, crate::mail::model::SEARCH_MAILBOX.to_string()));
+
                 let count = envelopes.len();
-                self.search_results = Some(envelopes);
-                self.search_account = Some(account);
+                self.search_results.insert(target.clone(), envelopes);
                 self.searching = false;
                 self.status = format!("{count} matching messages");
 
                 if expecting {
-                    self.open_mailbox(account, crate::mail::model::SEARCH_MAILBOX.to_string());
+                    self.open_mailbox(target.0, target.1);
                 }
             }
 
@@ -621,9 +641,19 @@ impl RemailApp {
             Action::Compose => self.start_compose(),
 
             Action::Refresh => {
-                if let Some((account, mailbox)) = self.open_mailbox.clone() {
-                    self.engine.send(Command::Sync { account, mailbox });
+                let Some((account, mailbox)) = self.open_mailbox.clone() else { return };
+                // A search folder has nothing to sync; what refreshing it
+                // means is asking the question again.
+                if let Some(saved) = self.saved_search(account, &mailbox) {
+                    self.search_results.remove(&(account, mailbox.clone()));
+                    self.fill_saved_search(account, &mailbox);
+                    let _ = saved;
+                    return;
                 }
+                if crate::mail::model::is_search_mailbox(&mailbox) {
+                    return;
+                }
+                self.engine.send(Command::Sync { account, mailbox });
             }
 
             Action::SearchServer(query) => {
@@ -653,6 +683,52 @@ impl RemailApp {
                     });
                 }
             }
+            Action::SaveSearch => {
+                let query = self.search.trim().to_string();
+                let Some((account, _)) = self.open_mailbox.clone() else { return };
+                if query.is_empty() {
+                    self.status = "Nothing to save".into();
+                    return;
+                }
+                // Named by the user rather than derived from the query: a
+                // query worth keeping is longer than the column it would be
+                // drawn in. The query is on the row's tooltip.
+                self.folder_edit = Some(FolderEdit::SaveSearch {
+                    account,
+                    query,
+                    scope: self.search_scope,
+                    include_spam_and_trash: self.config.read().unwrap().ui.search_spam_and_trash,
+                    name: String::new(),
+                });
+            }
+
+            Action::RenameSearch { account, mailbox } => {
+                let Some(name) = crate::mail::model::saved_search_name(&mailbox) else { return };
+                self.folder_edit = Some(FolderEdit::RenameSearch {
+                    account,
+                    mailbox: mailbox.clone(),
+                    name: name.to_string(),
+                });
+            }
+
+            Action::ForgetSearch { account, mailbox } => {
+                let Some(name) = crate::mail::model::saved_search_name(&mailbox) else { return };
+                {
+                    let mut config = self.config.write().unwrap();
+                    let Some(account) = config.account_mut(account) else { return };
+                    account.saved_searches.retain(|saved| saved.name != name);
+                }
+                self.save_config();
+                self.search_results.remove(&(account, mailbox.clone()));
+                // Standing in a folder that no longer exists is no place to
+                // be, so leave for whatever the account opens with.
+                if self.is_open(account, &mailbox) {
+                    let home = self.default_mailbox(account);
+                    self.open_mailbox = None;
+                    self.open_mailbox(account, home);
+                }
+            }
+
             Action::ClearSearch => {
                 let was_searching = self.searching;
                 self.search.clear();
@@ -665,8 +741,13 @@ impl RemailApp {
                     self.open_mailbox = None; // so `open_mailbox` does not no-op
                     self.open_mailbox(account, mailbox);
                 }
-                self.search_results = None;
-                self.search_account = None;
+                // Only the unsaved results are dismissed. A saved search is
+                // a folder the user made, not something the query box can
+                // throw away by being emptied.
+                self.search_results.retain(|(_, mailbox), _| {
+                    crate::mail::model::saved_search_name(mailbox).is_some()
+                });
+                self.search_target = None;
                 // Whatever is still running out there is now answering a
                 // question that has been withdrawn. Telling the engine lets
                 // it stop rather than finish and be ignored, which matters
@@ -773,7 +854,7 @@ impl RemailApp {
         // Results outlive being navigated away from: that is what makes them
         // a folder rather than a mode. They go when they are dismissed, or
         // when a later search replaces them.
-        let to_search = mailbox == crate::mail::model::SEARCH_MAILBOX;
+        let to_search = crate::mail::model::is_search_mailbox(&mailbox);
 
         self.open_mailbox = Some((account, mailbox.clone()));
         if !to_search {
@@ -790,14 +871,178 @@ impl RemailApp {
         self.textures.clear();
         if !to_search {
             self.engine.send(Command::OpenMailbox { account, mailbox });
+            return;
         }
+        self.fill_saved_search(account, &mailbox);
     }
 
-    /// Whether the search folder is what is on screen.
+    /// Fills a saved search: from the cache at once, from the server after.
+    ///
+    /// The same shape a folder opens with, for the same reason — something to
+    /// read immediately, made right a moment later. The cache holds envelopes
+    /// from every mailbox that has been synced, and the query that picks the
+    /// results out of it is the query the server will be given, so the two
+    /// answers are the same question asked twice. The cached one is narrower:
+    /// it can only find what has been cached.
+    ///
+    /// A folder that already has results keeps them. They came from a server
+    /// search this session, and clicking between folders is not a reason to
+    /// ask again — `Refresh` is.
+    fn fill_saved_search(&mut self, account: AccountId, mailbox: &str) {
+        let Some(name) = crate::mail::model::saved_search_name(mailbox) else { return };
+        let Some(saved) = self
+            .config
+            .read()
+            .unwrap()
+            .accounts
+            .iter()
+            .find(|a| a.id == account)
+            .and_then(|a| a.saved_searches.iter().find(|s| s.name == name))
+            .cloned()
+        else {
+            return;
+        };
+
+        let key = (account, mailbox.to_string());
+        if self.search_results.contains_key(&key) {
+            return;
+        }
+
+        if let Ok(query) = crate::mail::Query::parse(&saved.query) {
+            let cached: Vec<Envelope> = self
+                .store
+                .load_account_envelopes(account, CACHED_SEARCH_LIMIT)
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|envelope| query.matches(envelope))
+                .collect();
+            self.search_results.insert(key, cached);
+        }
+
+        self.run_saved_search(account, mailbox, &saved);
+    }
+
+    /// Asks the server for a saved search, so what the cache could not know
+    /// about arrives too.
+    fn run_saved_search(
+        &mut self,
+        account: AccountId,
+        mailbox: &str,
+        saved: &crate::config::SavedSearch,
+    ) {
+        self.searching = true;
+        self.search_generation += 1;
+        self.search_target = Some((account, mailbox.to_string()));
+        self.status = format!("Searching for \u{201c}{}\u{201d}\u{2026}", saved.query);
+        self.engine.send(Command::Search {
+            account,
+            mailbox: self.default_mailbox(account),
+            query: saved.query.clone(),
+            scope: saved.scope,
+            include_spam_and_trash: saved.include_spam_and_trash,
+            generation: self.search_generation,
+        });
+    }
+
+    /// Keeps a search under a name, and goes to the folder it now has.
+    fn save_search(&mut self, account: AccountId, search: crate::config::SavedSearch) {
+        let mailbox = crate::mail::model::saved_search_mailbox(&search.name);
+        {
+            let mut config = self.config.write().unwrap();
+            let Some(config) = config.account_mut(account) else { return };
+            // One name, one search: saving over a name is how a saved search
+            // is edited.
+            config.saved_searches.retain(|saved| saved.name != search.name);
+            config.saved_searches.push(search);
+        }
+        self.save_config();
+
+        // The results already on screen belong to it now, rather than being
+        // run again to be told the same thing.
+        if let Some(found) =
+            self.search_results.remove(&(account, crate::mail::model::SEARCH_MAILBOX.to_string()))
+        {
+            self.search_results.insert((account, mailbox.clone()), found);
+        }
+        self.open_mailbox = None;
+        self.open_mailbox(account, mailbox);
+        self.search.clear();
+    }
+
+    /// The saved search a folder stands for, if it is one.
+    fn saved_search(
+        &self,
+        account: AccountId,
+        mailbox: &str,
+    ) -> Option<crate::config::SavedSearch> {
+        let name = crate::mail::model::saved_search_name(mailbox)?;
+        self.config
+            .read()
+            .unwrap()
+            .accounts
+            .iter()
+            .find(|a| a.id == account)?
+            .saved_searches
+            .iter()
+            .find(|s| s.name == name)
+            .cloned()
+    }
+
+    /// The mailbox an account opens with.
+    fn default_mailbox(&self, account: AccountId) -> String {
+        self.config
+            .read()
+            .unwrap()
+            .accounts
+            .iter()
+            .find(|a| a.id == account)
+            .map(|a| a.default_mailbox.clone())
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| "INBOX".to_string())
+    }
+
+    /// The search folder on screen, if what is on screen is one.
+    fn open_search_key(&self) -> Option<(AccountId, String)> {
+        let (account, mailbox) = self.open_mailbox.clone()?;
+        crate::mail::model::is_search_mailbox(&mailbox).then_some((account, mailbox))
+    }
+
+    /// Whether a search folder is what is on screen.
     fn in_search_folder(&self) -> bool {
-        self.open_mailbox
-            .as_ref()
-            .is_some_and(|(_, mailbox)| mailbox == crate::mail::model::SEARCH_MAILBOX)
+        self.open_search_key().is_some()
+    }
+
+    /// The search folders to draw, with how many unread each is holding.
+    ///
+    /// Built every frame rather than kept: the unsaved one exists only while
+    /// it has something in it, and the saved ones are whatever the
+    /// configuration currently says.
+    fn search_folders(&self) -> Vec<(AccountId, crate::mail::MailboxInfo)> {
+        use crate::mail::MailboxInfo;
+        use crate::mail::model::SEARCH_MAILBOX;
+
+        let mut out = Vec::new();
+        let unread = |key: &(AccountId, String)| -> u32 {
+            self.search_results
+                .get(key)
+                .map(|rows| rows.iter().filter(|e| e.flags.is_unread()).count() as u32)
+                .unwrap_or(0)
+        };
+
+        for account in self.config.read().unwrap().accounts.iter().filter(|a| a.enabled) {
+            let key = (account.id, SEARCH_MAILBOX.to_string());
+            if self.search_results.contains_key(&key) {
+                let mut folder = MailboxInfo::search_results();
+                folder.unseen = unread(&key);
+                out.push((account.id, folder));
+            }
+            for saved in &account.saved_searches {
+                let mut folder = MailboxInfo::saved_search(&saved.name);
+                folder.unseen = unread(&(account.id, folder.name.clone()));
+                out.push((account.id, folder));
+            }
+        }
+        out
     }
 
     /// Loads the body for the cursor row into the reader.
@@ -887,7 +1132,7 @@ impl RemailApp {
         for envelope in self.envelopes.iter_mut().filter(|e| rows.contains(&e.key())) {
             envelope.flags.set(bit, add);
         }
-        if let Some(results) = &mut self.search_results {
+        for results in self.search_results.values_mut() {
             for envelope in results.iter_mut().filter(|e| rows.contains(&e.key())) {
                 envelope.flags.set(bit, add);
             }
@@ -1002,7 +1247,7 @@ impl RemailApp {
         let landing = landing_index(&self.visible(), rows);
 
         self.pending_removal.extend(take_rows(&mut self.envelopes, rows));
-        if let Some(results) = &mut self.search_results {
+        for results in self.search_results.values_mut() {
             take_rows(results, rows);
         }
 
@@ -1030,12 +1275,15 @@ impl RemailApp {
         self.envelopes.extend(restored.iter().cloned());
         self.sort_envelopes();
 
-        // A search view is a separate list; it needs the rows back too, or
-        // they stay missing until the search is re-run.
-        if let Some(results) = &mut self.search_results {
-            results.extend(restored);
+        // A search folder is a separate list; it needs the rows back too,
+        // or they stay missing until the search is run again. Every folder
+        // holding them, since more than one can.
+        for results in self.search_results.values_mut() {
+            results.extend(restored.iter().cloned());
             results.sort_by(|a, b| b.date.cmp(&a.date).then_with(|| b.uid.cmp(&a.uid)));
-            results.dedup_by_key(|e| e.uid);
+            // By row, not by UID: these come from several mailboxes, where a
+            // UID on its own names more than one message.
+            results.dedup_by_key(|e| e.key());
         }
     }
 
@@ -1222,9 +1470,9 @@ impl RemailApp {
     fn visible(&self) -> Vec<Envelope> {
         // In the search folder the results are the listing; the query box
         // narrows them further, the same as it narrows any other folder.
-        let rows: &[Envelope] = match (self.in_search_folder(), &self.search_results) {
-            (true, Some(results)) => results,
-            _ => &self.envelopes,
+        let rows: &[Envelope] = match self.open_search_key() {
+            Some(key) => self.search_results.get(&key).map_or(&[][..], Vec::as_slice),
+            None => &self.envelopes,
         };
 
         let typed = self.search.trim();
@@ -1443,6 +1691,7 @@ impl eframe::App for RemailApp {
             self.status_bar(ui);
         });
 
+        let searches = self.search_folders();
         egui::Panel::left("sidebar")
             .default_size(folders_width)
             // Narrow enough to become a strip of icons and initials.
@@ -1468,10 +1717,7 @@ impl eframe::App for RemailApp {
                         config: &config,
                         accounts: &mut self.accounts,
                         selected,
-                        search: self.search_results.as_ref().and_then(|found| {
-                            let unread = found.iter().filter(|e| e.flags.is_unread()).count();
-                            Some((self.search_account?, unread))
-                        }),
+                        searches: &searches,
                         font: folders_font.clone(),
                         theme: &folders_theme,
                         spring: &mut self.spring,
@@ -1719,7 +1965,7 @@ impl RemailApp {
         if scope != self.search_scope {
             self.search_scope = scope;
             // A narrower or wider scope invalidates what is on screen.
-            if self.search_results.is_some() && !self.search.trim().is_empty() {
+            if self.in_search_folder() && !self.search.trim().is_empty() {
                 action = Some(Action::SearchServer(self.search.trim().to_string()));
             }
         }
@@ -1741,7 +1987,7 @@ impl RemailApp {
                 include = !include;
                 self.config.write().unwrap().ui.search_spam_and_trash = include;
                 self.save_config();
-                if self.search_results.is_some() && !self.search.trim().is_empty() {
+                if self.in_search_folder() && !self.search.trim().is_empty() {
                     action = Some(Action::SearchServer(self.search.trim().to_string()));
                 }
             }
@@ -1752,7 +1998,7 @@ impl RemailApp {
         // to undo, and the only way to undo it was to select the text and
         // delete it — the button appeared once the search had reached the
         // server and not before.
-        let clearable = !self.search.is_empty() || self.search_results.is_some();
+        let clearable = !self.search.is_empty() || self.in_search_folder();
         // Reserved whether or not the button is there, so the field does not
         // jump a button's width narrower on the first keystroke and back on
         // the last. Take the space that is actually left rather than a fixed
@@ -1775,13 +2021,21 @@ impl RemailApp {
         // wide already, and nothing else here has a context menu to compete
         // with — neither egui's text field nor elegance's registers one.
         let menu = elegance::ContextMenu::new("search-menu").show(&search, |ui| {
-            ui.add_enabled(
-                !self.search.trim().is_empty(),
-                elegance::MenuItem::new("Copy as command"),
-            )
-            .clicked()
+            let typed = !self.search.trim().is_empty();
+            let mut chosen = None;
+            if ui.add_enabled(typed, elegance::MenuItem::new("Save this search\u{2026}")).clicked()
+            {
+                chosen = Some(SearchMenu::Save);
+            }
+            if ui.add_enabled(typed, elegance::MenuItem::new("Copy as command")).clicked() {
+                chosen = Some(SearchMenu::Copy);
+            }
+            chosen
         });
-        if menu == Some(true) {
+        if menu == Some(Some(SearchMenu::Save)) {
+            action = Some(Action::SaveSearch);
+        }
+        if menu == Some(Some(SearchMenu::Copy)) {
             let query = self.search.trim().to_string();
             let (account, mailbox) = self.open_mailbox.clone().unwrap_or_default();
             // Named only when there is more than one to choose between; the
@@ -1794,7 +2048,7 @@ impl RemailApp {
                 (enabled > 1).then_some(account),
                 self.search_scope,
                 self.config.read().unwrap().ui.search_spam_and_trash,
-                self.search_results.is_some(),
+                self.in_search_folder(),
             );
             ui.ctx().copy_text(command);
             // Named rather than quoted: the command is ninety characters of
@@ -1835,7 +2089,7 @@ impl RemailApp {
         } else if clearable
             && ui
                 .add(Button::new(glyphs::X.to_string()).size(ButtonSize::Medium).outline())
-                .on_hover_text(if self.search_results.is_some() {
+                .on_hover_text(if self.in_search_folder() {
                     "Clear search results (Esc)"
                 } else {
                     "Clear search (Esc)"
@@ -2100,13 +2354,11 @@ impl RemailApp {
         ui.horizontal(|ui| {
             // Count what is actually on screen: while a search is showing,
             // the mailbox's own total is not what the list is displaying.
-            let (rows, unread) = match &self.search_results {
-                Some(results) => (results, results.iter().filter(|e| e.flags.is_unread()).count()),
-                None => {
-                    (&self.envelopes, self.envelopes.iter().filter(|e| e.flags.is_unread()).count())
-                }
-            };
-            let noun = if self.search_results.is_some() { "results" } else { "messages" };
+            let showing = self.visible();
+            let in_search = self.in_search_folder();
+            let rows = &showing;
+            let unread = showing.iter().filter(|e| e.flags.is_unread()).count();
+            let noun = if in_search { "results" } else { "messages" };
             let counts = if unread > 0 {
                 format!("{} {noun}, {unread} unread", rows.len())
             } else {
@@ -2217,6 +2469,35 @@ impl RemailApp {
                 match action {
                     FolderAction::Create { account, name } => {
                         self.engine.send(Command::CreateMailbox { account, name });
+                    }
+                    FolderAction::SaveSearch { account, search } => {
+                        self.save_search(account, search);
+                    }
+                    FolderAction::RenameSearch { account, mailbox, to } => {
+                        let Some(from) = crate::mail::model::saved_search_name(&mailbox) else {
+                            return;
+                        };
+                        {
+                            let mut config = self.config.write().unwrap();
+                            let Some(account) = config.account_mut(account) else { return };
+                            if let Some(saved) =
+                                account.saved_searches.iter_mut().find(|s| s.name == from)
+                            {
+                                saved.name = to.clone();
+                            }
+                        }
+                        self.save_config();
+
+                        // The folder is named after the search, so renaming
+                        // one moves the other.
+                        let renamed = crate::mail::model::saved_search_mailbox(&to);
+                        if let Some(found) = self.search_results.remove(&(account, mailbox.clone()))
+                        {
+                            self.search_results.insert((account, renamed.clone()), found);
+                        }
+                        if self.is_open(account, &mailbox) {
+                            self.open_mailbox = Some((account, renamed));
+                        }
                     }
                     FolderAction::Rename { account, from, to } => {
                         // The open mailbox is about to change name under us.
@@ -2493,10 +2774,16 @@ mod tests {
 
     /// An application with nothing configured, for exercising the state the
     /// interface keeps rather than anything it draws or fetches.
+    /// One account, nothing it can connect to. Enough for the state the
+    /// interface keeps, which is what these exercise.
     fn app() -> RemailApp {
         let ctx = Context::default();
         let store = crate::mail::Store::open_memory().expect("in-memory store");
-        let mut app = RemailApp::new(&ctx, Config::default(), store).expect("app");
+
+        let mut config = Config::default();
+        config.accounts.push(crate::config::AccountConfig::imap(1, "me@example.com"));
+
+        let mut app = RemailApp::new(&ctx, config, store).expect("app");
         app.open_mailbox = Some((1, "INBOX".to_string()));
         app
     }
@@ -2507,9 +2794,16 @@ mod tests {
         Event::SearchResults {
             account: 1,
             mailbox: mailbox.to_string(),
+            // A result the query that found it would also match, since the
+            // box it was typed into goes on narrowing the folder.
             envelopes: vec![Envelope {
                 uid: 7,
                 mailbox: "[Gmail]/All Mail".to_string(),
+                subject: "Welcome to DUPR".to_string(),
+                from: vec![crate::mail::Addr {
+                    name: "DUPR".to_string(),
+                    email: "noreply@mydupr.com".to_string(),
+                }],
                 ..Default::default()
             }],
             generation,
@@ -2550,11 +2844,203 @@ mod tests {
 
         app.apply(Action::OpenMailbox { account: 1, mailbox: "Archery".into() });
         assert_eq!(app.open_mailbox, Some((1, "Archery".to_string())));
-        assert!(app.search_results.is_some(), "the results went with the folder change");
+        assert!(!app.search_results.is_empty(), "the results went with the folder change");
 
         // And the folder is still there to go back to.
         app.apply(Action::OpenMailbox { account: 1, mailbox: search_mailbox() });
         assert_eq!(app.visible().len(), 1, "the results did not come back");
+    }
+
+    fn saved(app: &mut RemailApp, name: &str, query: &str) -> String {
+        {
+            let mut config = app.config.write().unwrap();
+            let account = config.account_mut(1).expect("the test account");
+            account.saved_searches.push(crate::config::SavedSearch {
+                name: name.to_string(),
+                query: query.to_string(),
+                ..Default::default()
+            });
+        }
+        crate::mail::model::saved_search_mailbox(name)
+    }
+
+    /// A saved search is a folder like the unsaved one, and both are full at
+    /// once: opening one does not empty the other.
+    #[test]
+    fn a_saved_search_and_the_unsaved_results_are_both_kept() {
+        let mut app = app();
+        app.apply(Action::SearchServer("from:dupr".into()));
+        app.handle_event(results(app.search_generation));
+        assert_eq!(app.visible().len(), 1);
+
+        let folder = saved(&mut app, "Pickleball", "subject:pickleball");
+        app.apply(Action::OpenMailbox { account: 1, mailbox: folder });
+        // Nothing cached to find, and no account to ask, so it is empty —
+        // but the unsaved results are still where they were.
+        assert!(app.visible().is_empty());
+
+        app.apply(Action::OpenMailbox {
+            account: 1,
+            mailbox: crate::mail::model::SEARCH_MAILBOX.to_string(),
+        });
+        assert_eq!(app.visible().len(), 1, "the unsaved results were emptied by the saved one");
+    }
+
+    /// Saving asks for a name, carrying the query that is being saved.
+    #[test]
+    fn saving_asks_for_a_name_and_keeps_the_query() {
+        let mut app = app();
+        app.search = "from:dupr".into();
+        app.apply(Action::SearchServer("from:dupr".into()));
+        app.handle_event(results(app.search_generation));
+
+        app.apply(Action::SaveSearch);
+        let Some(crate::ui::accounts::FolderEdit::SaveSearch { query, scope, .. }) =
+            &app.folder_edit
+        else {
+            panic!("saving did not ask for a name");
+        };
+        assert_eq!(query, "from:dupr", "the query being saved is not the one that was run");
+        assert_eq!(*scope, app.search_scope, "the scope it was run at was not kept with it");
+    }
+
+    /// Naming it takes the results already on screen with it, rather than
+    /// running the same search again to be told the same thing.
+    #[test]
+    fn saving_carries_the_results_into_the_new_folder() {
+        let mut app = app();
+        app.search = "from:dupr".into();
+        app.apply(Action::SearchServer("from:dupr".into()));
+        app.handle_event(results(app.search_generation));
+        assert_eq!(app.visible().len(), 1);
+
+        app.save_search(
+            1,
+            crate::config::SavedSearch {
+                name: "Pickleball".into(),
+                query: "from:dupr".into(),
+                ..Default::default()
+            },
+        );
+
+        let folder = crate::mail::model::saved_search_mailbox("Pickleball");
+        assert_eq!(app.open_mailbox, Some((1, folder)), "saving did not open what it made");
+        assert_eq!(app.visible().len(), 1, "the results were not carried into the folder");
+        assert!(app.search.is_empty(), "the query box still holds what is now a folder");
+    }
+
+    /// A saved search is answered from the cache the moment it is opened, so
+    /// there is something to read while the server is being asked. The rows
+    /// come from whatever mailboxes hold them, which is what makes it a
+    /// search rather than a folder.
+    #[test]
+    fn opening_a_saved_search_fills_it_from_the_cache() {
+        let mut app = app();
+        let dupr = |uid: u32, mailbox: &str, subject: &str, email: &str| Envelope {
+            uid,
+            mailbox: mailbox.to_string(),
+            subject: subject.to_string(),
+            from: vec![crate::mail::Addr { name: String::new(), email: email.to_string() }],
+            date: uid as i64,
+            ..Default::default()
+        };
+
+        app.store
+            .save_envelopes(
+                1,
+                "INBOX",
+                &[dupr(1, "INBOX", "Welcome to DUPR", "noreply@mydupr.com")],
+            )
+            .unwrap();
+        app.store
+            .save_envelopes(
+                1,
+                "Archery",
+                &[
+                    dupr(2, "Archery", "Shoes for pickleball", "info@pb.dupr.com"),
+                    dupr(3, "Archery", "Nothing to do with it", "someone@example.com"),
+                ],
+            )
+            .unwrap();
+
+        let folder = saved(&mut app, "DUPR", "from:dupr");
+        app.apply(Action::OpenMailbox { account: 1, mailbox: folder });
+
+        let found = app.visible();
+        assert_eq!(found.len(), 2, "the cache was not searched: {found:?}");
+        assert!(
+            found.iter().any(|e| e.mailbox == "INBOX")
+                && found.iter().any(|e| e.mailbox == "Archery"),
+            "the results came from one mailbox rather than from wherever they are"
+        );
+        assert!(
+            found.iter().all(|e| e.from[0].email.contains("dupr")),
+            "the query did not decide what came back"
+        );
+
+        // And it asks the server as well, rather than settling for what
+        // happens to be cached.
+        assert!(app.searching, "nothing was asked of the server");
+    }
+
+    /// Clearing the query box dismisses the unsaved results. A saved folder
+    /// is not something the box can throw away by being emptied.
+    #[test]
+    fn clearing_does_not_forget_a_saved_search() {
+        let mut app = app();
+        let folder = saved(&mut app, "Pickleball", "subject:pickleball");
+        app.search_results.insert(
+            (1, folder.clone()),
+            vec![Envelope { uid: 3, mailbox: "INBOX".into(), ..Default::default() }],
+        );
+        app.apply(Action::SearchServer("from:dupr".into()));
+        app.handle_event(results(app.search_generation));
+
+        app.apply(Action::ClearSearch);
+        assert!(
+            app.search_results.contains_key(&(1, folder)),
+            "clearing the box emptied a folder it was not typed into"
+        );
+    }
+
+    /// Forgetting one takes its results and leaves the folder, which is no
+    /// longer anywhere to be.
+    #[test]
+    fn forgetting_a_saved_search_leaves_its_folder() {
+        let mut app = app();
+        let folder = saved(&mut app, "Pickleball", "subject:pickleball");
+        app.search_results.insert((1, folder.clone()), vec![Envelope::default()]);
+        app.apply(Action::OpenMailbox { account: 1, mailbox: folder.clone() });
+
+        app.apply(Action::ForgetSearch { account: 1, mailbox: folder.clone() });
+        assert!(!app.search_results.contains_key(&(1, folder)), "its results outlived it");
+        assert_eq!(app.open_mailbox, Some((1, "INBOX".to_string())), "left standing in nowhere");
+
+        let config = app.config.read().unwrap();
+        assert!(config.account(1).unwrap().saved_searches.is_empty(), "it is still saved");
+    }
+
+    /// The sidebar draws the unsaved results only while there are some, and
+    /// every saved search whether or not it has been opened.
+    #[test]
+    fn the_sidebar_lists_the_searches_there_are() {
+        let mut app = app();
+        assert!(app.search_folders().is_empty(), "a folder with nothing in it was drawn");
+
+        saved(&mut app, "Pickleball", "subject:pickleball");
+        let names: Vec<String> =
+            app.search_folders().iter().map(|(_, m)| m.display_name().to_string()).collect();
+        assert_eq!(names, vec!["Pickleball"], "a saved search is drawn before it is opened");
+
+        app.apply(Action::SearchServer("from:dupr".into()));
+        app.handle_event(results(app.search_generation));
+        let names: Vec<String> =
+            app.search_folders().iter().map(|(_, m)| m.display_name().to_string()).collect();
+        assert_eq!(
+            names,
+            vec!["Search results", "Pickleball"],
+            "the unsaved results come first, being the newest thing asked for"
+        );
     }
 
     /// Reading something while a search runs is not withdrawing it. The
@@ -2569,7 +3055,7 @@ mod tests {
         app.apply(Action::OpenMailbox { account: 1, mailbox: "Archery".into() });
         app.handle_event(results_from("INBOX", app.search_generation));
 
-        assert!(app.search_results.is_some(), "the results were dropped for having moved");
+        assert!(!app.search_results.is_empty(), "the results were dropped for having moved");
         assert!(!app.searching, "the search never finished");
 
         // Left where they chose to be, rather than taken somewhere.
@@ -2607,7 +3093,7 @@ mod tests {
 
         app.apply(Action::ClearSearch);
         assert_eq!(app.open_mailbox, Some((1, "Keowee".to_string())), "left nowhere to be");
-        assert!(app.search_results.is_none(), "the folder outlived being dismissed");
+        assert!(app.search_results.is_empty(), "the folder outlived being dismissed");
     }
 
     /// Dismissed from somewhere else, there is nothing to go back from.
@@ -2620,7 +3106,7 @@ mod tests {
 
         app.apply(Action::ClearSearch);
         assert_eq!(app.open_mailbox, Some((1, "Archery".to_string())), "moved unasked");
-        assert!(app.search_results.is_none());
+        assert!(app.search_results.is_empty());
     }
 
     /// A query typed while the results are open narrows them, rather than
@@ -2653,7 +3139,7 @@ mod tests {
 
         app.handle_event(results(abandoned));
         assert!(
-            app.search_results.is_none(),
+            app.search_results.is_empty(),
             "a search the user cleared came back and filled the list anyway"
         );
         assert!(!app.searching, "and restarted the spinner");
@@ -2672,16 +3158,11 @@ mod tests {
         assert_ne!(first, second, "the second search reused the first one's identity");
 
         app.handle_event(results(first));
-        assert!(app.search_results.is_none(), "the abandoned search answered for the current one");
+        assert!(app.search_results.is_empty(), "the abandoned search answered for the current one");
         assert!(app.searching, "and stopped the spinner while the current one was still out");
 
         app.handle_event(results(second));
-        assert_eq!(
-            app.search_results.as_ref().map(Vec::len),
-            Some(1),
-            "the current search's own \
-             results were dropped with the rest"
-        );
+        assert_eq!(app.visible().len(), 1, "the current search's own results were dropped");
         assert!(!app.searching, "the spinner ran on past the results");
     }
 

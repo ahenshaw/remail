@@ -30,6 +30,10 @@ renderer for message bodies.
 - **A search language**: `subject:invoice from:jane -is:read since:2w`. The
   same query filters what is loaded as you type and compiles to an IMAP
   `SEARCH` when you press Enter.
+- **Searches are folders.** Results land in one above the inbox rather than
+  taking over the message list, so opening something else does not lose them.
+  Right-click the query box to keep one by name: a saved search reopens from
+  the cache at once and re-runs itself behind that.
 - **Move to a folder** by dragging onto the sidebar — one message or a whole
   selection, carried as a translucent copy of the rows themselves. Or from
   the toolbar, `m`, or a right-click, which open a folder picker you filter

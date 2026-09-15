@@ -51,13 +51,32 @@ impl Flags {
     }
 }
 
-/// The name of the folder that holds search results.
+/// The name of the folder that holds the results of the last search.
 ///
 /// Reserved rather than chosen: a leading control character is not something
 /// a server will name a mailbox, so this cannot collide with a real one. It
 /// is never shown — [`MailboxInfo::display_name`] answers for it — and never
 /// sent to a server.
 pub const SEARCH_MAILBOX: &str = "\u{1}search";
+
+/// The folder a saved search fills, which is the same reserved space with the
+/// search's name after it. The separator is the control character again, so a
+/// name holding a `/` is still one name.
+pub fn saved_search_mailbox(name: &str) -> String {
+    format!("{SEARCH_MAILBOX}\u{1}{name}")
+}
+
+/// The name of the saved search a folder belongs to, or `None` for anything
+/// else — including the unsaved results, which have no name.
+pub fn saved_search_name(mailbox: &str) -> Option<&str> {
+    mailbox.strip_prefix(SEARCH_MAILBOX)?.strip_prefix('\u{1}')
+}
+
+/// Whether a folder is one of the search folders rather than a mailbox on a
+/// server. Nothing under this name is ever sent to one.
+pub fn is_search_mailbox(mailbox: &str) -> bool {
+    mailbox.starts_with(SEARCH_MAILBOX)
+}
 
 /// A mail address with its optional display name.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -255,23 +274,26 @@ impl MailboxInfo {
     /// The leaf as it should be shown.
     pub fn display_name(&self) -> &str {
         if self.special == SpecialUse::Search {
-            return "Search results";
+            return saved_search_name(&self.name).unwrap_or("Search results");
         }
         display_folder(self.leaf())
     }
 
-    /// The folder that holds search results, for an account that has some.
+    /// The folder that holds the results of the last search.
     ///
     /// Built where it is drawn rather than stored: it is not on any server,
     /// and the lists that come back from one would drop it.
     pub fn search_results() -> Self {
-        Self {
-            name: SEARCH_MAILBOX.to_string(),
-            delimiter: None,
-            special: SpecialUse::Search,
-            selectable: true,
-            unseen: 0,
-        }
+        Self::search_folder(SEARCH_MAILBOX.to_string())
+    }
+
+    /// The folder a saved search fills, named as the user named it.
+    pub fn saved_search(name: &str) -> Self {
+        Self::search_folder(saved_search_mailbox(name))
+    }
+
+    fn search_folder(name: String) -> Self {
+        Self { name, delimiter: None, special: SpecialUse::Search, selectable: true, unseen: 0 }
     }
 
     /// Paths of this mailbox's ancestors, outermost first. `Maverick/HR`

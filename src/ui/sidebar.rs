@@ -31,16 +31,15 @@ pub struct SidebarInput<'a> {
     pub config: &'a Config,
     pub accounts: &'a mut HashMap<AccountId, AccountView>,
     pub selected: Option<(AccountId, &'a str)>,
-    /// The account holding search results, and how many of them are unread.
-    /// Drawn above that account's folders as a place to go back to; absent
-    /// when there has been no search, which is why it is not in the mailbox
-    /// list.
+    /// The search folders to draw above each account's own, in order: the
+    /// unsaved results when there are any, then the searches that account has
+    /// saved. Not in the mailbox list because they are on no server, and the
+    /// lists that come back from one would drop them.
     ///
-    /// Unread rather than the number found, because the badge means unread
-    /// on every other row and a count that meant something else there would
-    /// be read as that one. It costs nothing: these are envelopes already in
-    /// hand.
-    pub search: Option<(AccountId, usize)>,
+    /// Their badges count unread rather than results found, because the badge
+    /// means unread on every other row and a count meaning something else
+    /// there would be read as that one.
+    pub searches: &'a [(AccountId, MailboxInfo)],
     pub font: FontId,
     pub theme: &'a Theme,
     pub spring: &'a mut SpringLoad,
@@ -112,7 +111,8 @@ impl SpringLoad {
 }
 
 pub fn show(ui: &mut Ui, input: SidebarInput<'_>) -> Option<Action> {
-    let SidebarInput { config, accounts, selected, search, font: pane_font, theme, spring } = input;
+    let SidebarInput { config, accounts, selected, searches, font: pane_font, theme, spring } =
+        input;
     let mut action = None;
 
     // The payload outlives the frame, so this is also how the sidebar knows
@@ -208,19 +208,14 @@ pub fn show(ui: &mut Ui, input: SidebarInput<'_>) -> Option<Action> {
                     .map(|m| m.name.as_str())
                     .collect();
 
-                if let Some((search_account, unread)) = search
-                    && search_account == account.id
-                {
-                    let mut mailbox = MailboxInfo::search_results();
-                    mailbox.unseen = unread as u32;
+                for (_, mailbox) in searches.iter().filter(|(id, _)| *id == account.id) {
                     let outcome = mailbox_row(
                         ui,
                         RowInput {
-                            mailbox: &mailbox,
+                            mailbox,
                             account: account.id,
                             depth: 0,
-                            selected: selected
-                                == Some((account.id, crate::mail::model::SEARCH_MAILBOX)),
+                            selected: selected == Some((account.id, mailbox.name.as_str())),
                             has_children: false,
                             collapsed: false,
                             font: &font,
@@ -228,10 +223,41 @@ pub fn show(ui: &mut Ui, input: SidebarInput<'_>) -> Option<Action> {
                             row_height,
                         },
                     );
+
+                    // Only a saved search has anything to keep or rename;
+                    // the unsaved one is dismissed from the query box.
+                    let saved = crate::mail::model::saved_search_name(&mailbox.name).is_some();
+                    let menu = saved
+                        .then(|| {
+                            elegance::ContextMenu::new(("search-menu", &mailbox.name)).show(
+                                &outcome.response,
+                                |ui| {
+                                    let mut chosen = None;
+                                    if ui.add(elegance::MenuItem::new("Rename\u{2026}")).clicked() {
+                                        chosen = Some(Action::RenameSearch {
+                                            account: account.id,
+                                            mailbox: mailbox.name.clone(),
+                                        });
+                                    }
+                                    if ui.add(elegance::MenuItem::new("Forget")).clicked() {
+                                        chosen = Some(Action::ForgetSearch {
+                                            account: account.id,
+                                            mailbox: mailbox.name.clone(),
+                                        });
+                                    }
+                                    chosen
+                                },
+                            )
+                        })
+                        .flatten();
+                    if let Some(Some(chosen)) = menu {
+                        action = Some(chosen);
+                    }
+
                     if matches!(outcome.outcome, Some(RowOutcome::Open)) {
                         action = Some(Action::OpenMailbox {
                             account: account.id,
-                            mailbox: crate::mail::model::SEARCH_MAILBOX.to_string(),
+                            mailbox: mailbox.name.clone(),
                         });
                     }
                 }
@@ -462,6 +488,8 @@ fn accepts_drop(
 /// What one mailbox line reported.
 struct RowResult {
     outcome: Option<RowOutcome>,
+    /// The row itself, for hanging a context menu on.
+    response: egui::Response,
     /// The pointer is over this row holding messages from this account.
     /// True even when the row will not take them, because a folder can be
     /// a route to a child that will.
@@ -485,7 +513,7 @@ fn mailbox_row(ui: &mut Ui, input: RowInput<'_>) -> RowResult {
     let (rect, response) =
         ui.allocate_exact_size(Vec2::new(ui.available_width(), row_height), Sense::click());
     if !ui.is_rect_visible(rect) {
-        return RowResult { outcome: None, carrying: false };
+        return RowResult { outcome: None, response, carrying: false };
     }
 
     let mut outcome = None;
@@ -650,10 +678,17 @@ fn mailbox_row(ui: &mut Ui, input: RowInput<'_>) -> RowResult {
 
     // The full path is the only way to tell apart two folders whose leaf
     // names match, which is common once a pane is narrow enough to truncate.
-    if shortened || depth > 0 {
-        response.on_hover_text(&mailbox.name);
-    }
-    RowResult { outcome, carrying }
+    let response = if shortened || depth > 0 {
+        // A search folder's "path" is the reserved name, which says nothing;
+        // what it is worth showing is the query, and the caller knows that.
+        match crate::mail::model::is_search_mailbox(&mailbox.name) {
+            true => response,
+            false => response.on_hover_text(&mailbox.name),
+        }
+    } else {
+        response
+    };
+    RowResult { outcome, response, carrying }
 }
 
 /// The colour of a mailbox's icon.
@@ -999,11 +1034,11 @@ mod render_tests {
         // A count of each shape: none, one digit, two, three.
         let names: [(&str, SpecialUse, u32); 6] = [
             ("Search results", SpecialUse::Search, 3),
+            ("Pickleball", SpecialUse::Search, 0),
             ("Inbox", SpecialUse::Inbox, 7),
             ("Reports", SpecialUse::Normal, 0),
             ("Work", SpecialUse::Normal, 42),
             ("Trash", SpecialUse::Trash, 0),
-            ("Drafts", SpecialUse::Drafts, 128),
         ];
 
         crate::ui::raster::render(
@@ -1018,13 +1053,23 @@ mod render_tests {
                     let first_top = ui.min_rect().top();
                     let mut centres = Vec::new();
                     for (index, (name, special, unseen)) in names.iter().enumerate() {
-                        let mailbox = MailboxInfo {
-                            name: (*name).to_string(),
-                            delimiter: Some("/".into()),
-                            special: *special,
-                            selectable: true,
-                            unseen: *unseen,
+                        // A search folder is named by its reserved path, not
+                        // by what it reads as; `display_name` is what turns
+                        // one into the other.
+                        let mut mailbox = match special {
+                            SpecialUse::Search if *name == "Search results" => {
+                                MailboxInfo::search_results()
+                            }
+                            SpecialUse::Search => MailboxInfo::saved_search(name),
+                            _ => MailboxInfo {
+                                name: (*name).to_string(),
+                                delimiter: Some("/".into()),
+                                special: *special,
+                                selectable: true,
+                                unseen: 0,
+                            },
                         };
+                        mailbox.unseen = *unseen;
                         mailbox_row(
                             ui,
                             RowInput {

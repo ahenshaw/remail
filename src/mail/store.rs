@@ -332,6 +332,45 @@ impl Store {
         Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
 
+    /// Every cached envelope for an account, newest first, whatever mailbox
+    /// it is in.
+    ///
+    /// What a saved search is answered from before the server has been asked.
+    /// The rows carry the mailbox they came from, as a cross-folder listing
+    /// has to: it is what tells the reader where each result lives, and what
+    /// a move or a delete acts on.
+    ///
+    /// Filtering is the caller's, through [`crate::mail::Query::matches`], so
+    /// the cached answer and the server's are the same question asked twice.
+    pub fn load_account_envelopes(&self, account: AccountId, limit: u32) -> Result<Vec<Envelope>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT uid, mailbox, subject, from_addrs, to_addrs, cc_addrs, date, flags, size,
+                    message_id, in_reply_to, has_attach, preview
+             FROM envelope WHERE account = ?1
+             ORDER BY date DESC, uid DESC LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![account, limit], |r| {
+            Ok(Envelope {
+                uid: r.get(0)?,
+                mailbox: r.get(1)?,
+                folder_hint: String::new(),
+                subject: r.get(2)?,
+                from: parse_addrs(r.get::<_, String>(3)?),
+                to: parse_addrs(r.get::<_, String>(4)?),
+                cc: parse_addrs(r.get::<_, String>(5)?),
+                date: r.get(6)?,
+                flags: Flags(r.get(7)?),
+                size: r.get(8)?,
+                message_id: r.get(9)?,
+                in_reply_to: r.get(10)?,
+                has_attachments: r.get::<_, i64>(11)? != 0,
+                preview: r.get(12)?,
+            })
+        })?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
     /// UIDs in a mailbox whose cached envelope never got its headers.
     ///
     /// A sync reads only UIDs above the high-water mark, so a row that was

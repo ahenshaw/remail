@@ -93,6 +93,18 @@ pub enum Action {
     },
     /// Show or hide an account's whole folder list.
     ToggleAccount(AccountId),
+    /// Keep the search on screen, by name.
+    SaveSearch,
+    /// Rename a saved search.
+    RenameSearch {
+        account: AccountId,
+        mailbox: String,
+    },
+    /// Drop a saved search. Its results go with it; the mail does not.
+    ForgetSearch {
+        account: AccountId,
+        mailbox: String,
+    },
     /// Ask where to move the selected messages.
     MoveTo,
     /// Messages were dropped on a folder in the sidebar.
