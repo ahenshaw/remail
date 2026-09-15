@@ -517,18 +517,90 @@ fn project_dirs() -> Result<directories::ProjectDirs> {
 }
 
 pub fn config_dir() -> Result<PathBuf> {
+    if let Some(sandbox) = test_sandbox() {
+        return Ok(sandbox);
+    }
     Ok(project_dirs()?.config_dir().to_path_buf())
 }
 
 /// Directory holding the message cache database.
 pub fn data_dir() -> Result<PathBuf> {
-    let dir = project_dirs()?.data_dir().to_path_buf();
+    let dir = match test_sandbox() {
+        Some(sandbox) => sandbox,
+        None => project_dirs()?.data_dir().to_path_buf(),
+    };
     fs::create_dir_all(&dir)?;
     Ok(dir)
 }
 
+/// Where a test run is allowed to read and write.
+///
+/// A test that builds a `RemailApp` builds a real one, and anything that
+/// reaches [`Config::save`] through it would otherwise land on the
+/// configuration of whoever is running the tests — which is exactly what
+/// happened: a test suite overwrote an account, a theme and three chosen
+/// fonts, on the machine of the person it was written for. Nothing in a test
+/// has any business at those paths, so under `cfg(test)` there is no way to
+/// reach them rather than a rule about not doing it.
+#[cfg(test)]
+fn test_sandbox() -> Option<PathBuf> {
+    Some(std::env::temp_dir().join(format!("remail-tests-{}", std::process::id())))
+}
+
+#[cfg(not(test))]
+fn test_sandbox() -> Option<PathBuf> {
+    None
+}
+
 #[cfg(test)]
 mod tests {
+    /// Everything the interface can set has to survive being written out and
+    /// read back. A field whose TOML is a table rather than a value has to be
+    /// emitted after the plain ones, and getting that wrong does not fail
+    /// loudly — it writes a file that parses as something else.
+    #[test]
+    fn a_fully_populated_config_round_trips() {
+        let mut config = Config::default();
+        let mut account = AccountConfig::imap(1, "me@example.com");
+        account.display_name = "Me".into();
+        account.collapsed_folders = vec!["Work".into(), "Work/HR".into()];
+        account.saved_searches.push(SavedSearch {
+            name: "Pickleball".into(),
+            query: "subject:pickleball -is:read".into(),
+            scope: SearchScope::All,
+            include_spam_and_trash: true,
+        });
+        config.accounts.push(account);
+
+        config.ui.theme = ThemeChoice::Outlook;
+        config.ui.compact_list = true;
+        config.ui.dark_folders = true;
+        config.ui.font_size = 15.997_192;
+        // The fields that serialize as tables, which is the case worth
+        // checking: every one of them, and all at once.
+        config.ui.interface_font = PaneFont::Named("Carlito".into());
+        config.ui.folders.font = PaneFont::Named("Carlito".into());
+        config.ui.folders.font_size = Some(15.641_932);
+        config.ui.messages.font = PaneFont::Mono;
+        config.ui.reading.font = PaneFont::Named("Georgia".into());
+
+        let text = toml::to_string_pretty(&config).expect("a config that cannot be written");
+        let back: Config = toml::from_str(&text)
+            .unwrap_or_else(|e| panic!("a config this program wrote will not load: {e}\n\n{text}"));
+
+        assert_eq!(back.accounts.len(), 1, "the account did not survive:\n{text}");
+        assert_eq!(back.accounts[0].saved_searches.len(), 1);
+        assert_eq!(back.accounts[0].saved_searches[0].scope, SearchScope::All);
+        assert_eq!(back.accounts[0].collapsed_folders.len(), 2);
+        assert_eq!(back.ui.theme, ThemeChoice::Outlook);
+        assert!(back.ui.dark_folders && back.ui.compact_list);
+        assert_eq!(back.ui.interface_font, PaneFont::Named("Carlito".into()));
+        assert_eq!(back.ui.folders.font, PaneFont::Named("Carlito".into()));
+        assert_eq!(back.ui.messages.font, PaneFont::Mono);
+        assert_eq!(back.ui.reading.font, PaneFont::Named("Georgia".into()));
+        assert_eq!(back.ui.font_size, config.ui.font_size);
+    }
+
     /// The pane changes sides, not character: a folder chosen there and a
     /// message chosen in the list have to read as the same gesture.
     #[test]
